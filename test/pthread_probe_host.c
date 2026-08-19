@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 /* The measuring machinery of the console probe, run here so that a console run is not spent finding
  * out that the probe itself is wrong.
  *

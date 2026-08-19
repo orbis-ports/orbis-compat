@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 /* Runs the unwinding logic on the host, because the algorithm is platform-independent even though
  * the reason it exists is not. Proves the frames are collected, in order, and bounded. */
 #include <execinfo.h>

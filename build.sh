@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright © 2026 Mikołaj Mikołajczyk
+# SPDX-License-Identifier: MIT
 # Builds liborbis-compat.a for the console, and checks it.
 #
 #   ./build.sh [--out <dir>] [--define NAME=VALUE] [--no-check]
@@ -87,17 +89,7 @@ for h in $(cd "${ROOT}/include" && find . -name '*.h' | sed 's|^\./||' | sort); 
 done
 echo "== every header is self-contained"
 
-# 3. Six headers still exist in mesa-ps4 too. This check deletes itself when they do.
-SHIMS="${MESA_ORBIS_SHIMS:-$HOME/src/mesa-ps4/build-support/orbis/shims}"
-if [[ -d "${SHIMS}" ]]; then
-  for h in machine/cpu.h pthread_np.h sys/cpuset.h sys/ioccom.h sys/param.h sys/sysctl.h; do
-    [[ -f "${SHIMS}/${h}" ]] || continue
-    cmp -s "${ROOT}/include/${h}" "${SHIMS}/${h}" || { echo "!! ${h} differs from ${SHIMS}/${h}" >&2; exit 1; }
-  done
-  echo "== still duplicated in mesa-ps4, and still identical"
-fi
-
-# 4. ⚠ The one thing cross-compiling cannot tell you: whether it WORKS. Run natively - this is what
+# 3. ⚠ The one thing cross-compiling cannot tell you: whether it WORKS. Run natively - this is what
 #    caught a missing <stdint.h> that the cross build had accepted through the PS4 headers.
 cc -funwind-tables -I"${ROOT}/include" -o "${WORK}/bt" "${ROOT}/src/orbis_backtrace.c" "${ROOT}/test/backtrace_host.c"
 "${WORK}/bt" >/dev/null

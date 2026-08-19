@@ -105,7 +105,29 @@ between libc++ and the SDK's C headers.
 nothing references an interposer at all - interposition works by the linker preferring a defined
 symbol, and a symbol nobody references never pulls its archive member in.
 
+⚠ **libc goes last on the link line.** The interposers define `__mmap`, `__munmap` and `__madvise`,
+and the SDK's `libc.a` defines them too. Force-loading the overlay *after* libc has contributed its
+own `mmap.lo` is a **duplicate-symbol error**, not a silent preference - which is the good outcome, a
+noisy one. In CMake, that means `-lc` belongs in `CMAKE_<LANG>_STANDARD_LIBRARIES`, not in
+`CMAKE_EXE_LINKER_FLAGS`.
+
 An application that wants the corrections to log calls `orbis_set_log` once, early.
+
+### 3.1 From CMake
+
+`cmake/orbis-compat.cmake` carries the three of those that a build system can hold:
+
+```cmake
+include(${ORBIS_COMPAT_DIR}/cmake/orbis-compat.cmake)
+orbis_compat_locate()     # finds it, or FATAL_ERRORs saying why it matters
+orbis_compat_target()     # orbis::compat - the archive, with --whole-archive already on it
+orbis_compat_verify()     # compiles the type assertions with THIS project's real flags
+```
+
+⚠ **The include path is the one part a target cannot carry.** CMake puts `CMAKE_<LANG>_FLAGS` on the
+command line ahead of any target's `-isystem`, so an `INTERFACE_INCLUDE_DIRECTORIES` would land
+behind the SDK - where the corrections compile and do nothing. It stays in the toolchain file, and
+`orbis_compat_verify()` is what turns "we trust the order" into a configure-time error.
 
 Who does this today:
 
@@ -129,8 +151,13 @@ include/orbis_{stat,mmap,mem,paths}.h
 include/machine/, sys/, pthread_np.h
 src/                        orbis_backtrace.c orbis_log.c orbis_{stat,mmap,mem,paths}.cpp
 test/                       sizes.c backtrace_host.c pthread_probe_host.c
+cmake/orbis-compat.cmake    locate / orbis::compat / verify, for consumers that use CMake
 build.sh                    produces build/liborbis-compat.a, then checks it
 ```
+
+The C sources are written in four-space K&R and the C++ ones in Tempest's two-space style, because
+that is what they were when they moved here. **Left alone deliberately**: reformatting a file that
+moved makes the move unreadable.
 
 ## 5. Verification
 
@@ -140,8 +167,6 @@ itself is the "does everything compile" check, so what follows is only what comp
 * the four types are corrected, and `pthread_mutex_t`/`cond`/`rwlock` are **not** - and the same test
   must FAIL without the overlay, or it proves nothing
 * every header is self-contained, compiled alone, C or C++ as its contents require
-* the copies of the six SDK-gap headers are byte-identical to the originals still in `mesa-ps4`
-  (a check that removes itself when those originals go)
 * `backtrace` collects frames, bounds its buffer and formats addresses - **run natively**, with a
   positive control that deliberately overruns
 
@@ -231,6 +256,7 @@ is our workaround or their bug, which is a different question from whether it wi
 | the four pthread sizes | **OpenOrbis/musl** | measured; extends PR #29 but corrects fewer types, see §6.1 |
 | `struct stat` layout | **OpenOrbis/musl** | PR #35 covers `mode_t`; verify it covers the rest |
 | `machine/*`, `pthread_np.h`, `execinfo.h` | **OpenOrbis toolchain** | headers the SDK simply lacks |
+| `sys/{cpuset,ioccom,param,sysctl}.h` | **OpenOrbis toolchain** | the same, for the FreeBSD side of the platform. `ioccom.h` is BSD-3-Clause and should be sent as FreeBSD's file, not as ours |
 | `_umtx_op` | **OpenOrbis/musl** | with §6.2 and §6.3, which change the story |
 | mmap, heap, no-cwd interposers | **OpenOrbis toolchain**, if they want them |
 | `orbis_log.h` | **stays ours** | an overlay concern, not a libc one |
@@ -243,8 +269,8 @@ console; that is the bar.
 
 * ⚠ **Nothing here is committed anywhere but this repository.** The four forks it serves still carry
   their side of the wiring as uncommitted changes.
-* The six SDK-gap headers are still duplicated in `mesa-ps4/build-support/orbis/shims`. `build.sh`
-  fails if they drift and drops the check when the originals go.
+* No licence header survey beyond this repository's own: everything here is MIT except
+  `include/sys/ioccom.h`, whose macros follow FreeBSD's (BSD-3-Clause) because they encode an ABI.
 * One GPU stall survives a working run - one submit in ~1200, fence stuck for four submissions, every
   address mapped. **Pre-existing**, not introduced here.
 * ⚠ `__mmap`, `__munmap` and `__madvise` are **local** (`t`) in the linked title rather than global.
@@ -269,3 +295,7 @@ console; that is the bar.
    Cutting it down to "what this run needs" makes the title crash entering 3D.
 6. ⚠ **`git checkout -- <file>` on an uncommitted file destroys it**, with no stash, no reflog and no
    dangling blob. 209 lines of OpenGothic's CMakeLists went that way and had to be reconstructed.
+7. ⚠ **A stale build directory answers questions about a build that no longer exists.**
+   `~/.cache/tempest-og/build-ps4` still compiles `og_ps4_mmap.cpp` and links no overlay at all; the
+   title's real build directory is `~/.cache/opengothic-ps4/build`. Read `link.txt` before concluding
+   anything from a build tree.

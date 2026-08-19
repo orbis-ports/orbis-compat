@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 // See include/orbis_log.h.
 #include <orbis_log.h>
 

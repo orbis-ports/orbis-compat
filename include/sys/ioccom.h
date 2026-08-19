@@ -1,7 +1,13 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 /* FreeBSD's ioctl encoding macros. OpenOrbis' musl does not ship them and Mesa's vendored
    drm-uapi/drm.h needs them for every _IOWR in the amdgpu ABI - 100 of this build's 109 errors.
    These are the plain FreeBSD definitions; nothing here calls an ioctl on this platform, the macros
-   only have to expand to the same numbers the ABI headers were written against. */
+   only have to expand to the same numbers the ABI headers were written against.
+
+   ⚠ THIS IS THE ONE FILE HERE THAT IS NOT ORIGINAL. The macros below follow FreeBSD's
+   sys/sys/ioccom.h, which is BSD-3-Clause; they encode an ABI and cannot be written differently and
+   still work. The rest of this repository is MIT. */
 #pragma once
 #define IOCPARM_SHIFT   13
 #define IOCPARM_MASK    ((1 << IOCPARM_SHIFT) - 1)

@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 /* FreeBSD's _umtx_op, which is the kernel primitive Mesa's FreeBSD futex is written against.
  *
  * ⚠ THE SYSCALL IS BLOCKED; THE PLATFORM IS NOT MISSING IT. Measured on the console, not assumed:

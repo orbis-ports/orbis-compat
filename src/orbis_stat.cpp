@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 #include "orbis_stat.h"
 
 #include <sys/stat.h>

@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 /* FreeBSD's cpuset_t, for a platform that is a FreeBSD kernel with a musl libc.
  *
  * Mesa's u_thread.c does `#define cpu_set_t cpuset_t` under __FreeBSD__ and then uses CPU_ZERO /

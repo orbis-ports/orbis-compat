@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 /* backtrace(3) over the unwinder the toolchain already links. See include/execinfo.h. */
 #include <execinfo.h>
 

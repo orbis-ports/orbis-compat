@@ -1,5 +1,8 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 /* What the overlay is for, stated as something the compiler checks.
- * Built by check.sh against the real toolchain; no console needed. */
+ * Built by build.sh against the real toolchain, and by cmake/orbis-compat.cmake at configure time.
+ * No console needed: a wrong include order is a compile error here. */
 #include <pthread.h>
 #include <stddef.h>
 

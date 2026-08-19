@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 /* Corrected pthread type sizes for the PlayStation 4, ahead of the toolchain's own header.
  *
  * The SDK ships musl's declarations over Sony's implementation, and Sony's is FreeBSD-derived:

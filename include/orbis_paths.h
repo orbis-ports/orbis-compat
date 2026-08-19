@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 #pragma once
 
 // Anchoring relative paths, because this process has no working directory at all.

@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 /* backtrace(3), which this SDK does not ship although the platform can do it.
  *
  * musl has no execinfo.h by design, so code written against glibc or FreeBSD fails to compile

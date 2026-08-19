@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 // Corrective interposition of the stat() family for PS4 builds.
 //
 // ---------------------------------------------------------------- the defect

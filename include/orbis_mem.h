@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 // Which of the PS4's two memory budgets a title is out of, said in one line.
 //
 // A PS4 process does not have one heap, it has two pools that never help each other:

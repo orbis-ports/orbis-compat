@@ -1,3 +1,5 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
 /* Stub. Mesa asks sysctl for the CPU count, the process name and the memory size in four places
    (u_cpu_detect.c, u_process.c, os_misc.c, u_thread.c). Declared so those compile; a PS4 arm should
    answer them from sceKernel* instead, and returning -1 makes Mesa take its own fallbacks. */
