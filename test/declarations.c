@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* dEQP's deMemory.c, which reaches for it through <stdlib.h> because clang says __FreeBSD__. */
 static size_t usable(void *p)
@@ -24,6 +25,22 @@ static void arm_event(struct sigevent *ev, void (*fn)(union sigval))
     ev->sigev_notify_function = fn;
 }
 
+/* Any caller installing a SA_SIGINFO handler. The SDK's own macro is one underscore pair short of
+   the union member it names, so this is a compile error without the overlay. */
+static void on_signal(int sig, siginfo_t *info, void *uctx)
+{
+    (void)sig; (void)info; (void)uctx;
+}
+
+static int install(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = on_signal;
+    sa.sa_flags     = SA_SIGINFO;
+    return sigaction(SIGSEGV, &sa, 0);
+}
+
 /* Mesa's radv_amdgpu_cs.c, which compares a return code against -ENODATA. */
 static int is_no_data(int r)
 {
@@ -35,7 +52,7 @@ int main(void)
     void *p = malloc(16);
     struct sigevent ev;
     arm_event(&ev, 0);
-    int n = (int)usable(p) + is_no_data(-ENODATA);
+    int n = (int)usable(p) + is_no_data(-ENODATA) + (install() == 0 ? 0 : 0);
     free(p);
     return n > 0 ? 0 : 1;
 }

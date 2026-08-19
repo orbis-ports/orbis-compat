@@ -31,6 +31,14 @@
 
 #include_next <signal.h>
 
+/* ⚠ sa_sigaction DOES NOT COMPILE AS THE SDK DEFINES IT, and this is a typo rather than a design.
+   signal.h:136 names the union member `__sa_sigaction`; signal.h:142 defines the macro as
+   `__sa_handler.sa_sigaction` - one underscore pair short. Every caller that installs a SA_SIGINFO
+   handler therefore has to reach through the real member by hand, which is portable code's business
+   to not have to know. Redefined here to what the struct actually contains. */
+#undef sa_sigaction
+#define sa_sigaction __sa_handler.__sa_sigaction
+
 #ifndef sigev_notify_function
 #define sigev_notify_function   _sigev_un._sigev_thread._function
 #endif

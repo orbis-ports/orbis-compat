@@ -87,7 +87,7 @@ clang "${CFLAGS[@]}" -fsyntax-only "${ROOT}/test/declarations.c"
 if clang "${BASE[@]}" -isystem "${TC}/include" -fsyntax-only "${ROOT}/test/declarations.c" 2>/dev/null; then
   echo "!! declarations.c passes WITHOUT the overlay - the test proves nothing" >&2; exit 1
 fi
-echo "== malloc_usable_size, sigev_notify_function and ENODATA all reachable"
+echo "== malloc_usable_size, sigev_notify_function, ENODATA and sa_sigaction all usable"
 
 # 3. Every header stands alone - C or C++ as its own contents require.
 for h in $(cd "${ROOT}/include" && find . -name '*.h' | sed 's|^\./||' | sort); do
