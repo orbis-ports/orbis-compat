@@ -7,7 +7,18 @@
 #   orbis_compat_locate()                       # finds the overlay, or FATAL_ERRORs
 #   ...                                         # toolchain file: put the include path FIRST, by hand
 #   orbis_compat_target()                       # defines orbis::compat, for the link line
-#   orbis_compat_verify()                       # proves the corrections actually reached the compiler
+#   orbis_compat_verify()                       # IN THE PROJECT, not the toolchain file - see below
+#
+# ⚠ WHERE EACH ONE BELONGS, learned by wiring a real project rather than by design:
+#
+#   locate()   toolchain file. It is only variables.
+#   verify()   THE PROJECT, after project(). It compiles a test program, and while a toolchain file
+#              is being read there is no working compiler to compile it with.
+#   target()   either - but ⚠ do NOT follow it with a global link_libraries(orbis::compat) in a tree
+#              that export()s targets. CMake refuses: "requires target orbis_compat that is not in
+#              any export set", because link_libraries() reaches every target including exported
+#              ones. Put the archive in CMAKE_EXE_LINKER_FLAGS instead, which reaches exactly what
+#              needs it - executables - or link the target per-executable.
 #
 # ⚠ THE INCLUDE PATH CANNOT COME FROM THE TARGET, and this is the whole reason this file is three
 # functions rather than one imported library. CMake puts CMAKE_<LANG>_FLAGS on the command line

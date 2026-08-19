@@ -9,7 +9,7 @@ sideways. An idea that is not on this list goes to §Parking, not into the tree.
 
 An item is finished when its **Done when** line is true. Not before, and not "mostly".
 
-Status: **1-4 done, 5 half done (the CTS half); Tempest's toolchain file is what is left of it.**
+Status: **1-5 done; 6 is next.**
 
 ---
 
@@ -258,6 +258,25 @@ the umtx A/B - was STAGED in git. Removed from the index, kept on disk, `build*/
 `duplicate symbol: __mmap` link error - measured, on a throwaway project, not predicted.
 
 **Done when:** the toolchain file has no hand-spliced overlay paths left, and all four builds pass.
+
+## DONE, 2026-08-19
+
+Tempest's toolchain file includes the module, calls `orbis_compat_locate()`, and passes
+`-include orbis_prefix.h` in place of `-include stdlib.h`. OpenGothic calls `orbis_compat_verify()`
+after `project()`. A **from-scratch** configure and build of the title: `Performing Test
+ORBIS_COMPAT_TYPES_CORRECTED - Success`, then zero errors.
+
+⚠ **THE FIRST BUILD OF THIS CHANGE WAS GREEN AND TESTED NOTHING.** `CMAKE_<LANG>_FLAGS_INIT` only
+applies at FIRST configure, and the existing build directory had its flags cached from August, so
+`flags.make` still said `-include stdlib.h`. Checking the generated flags rather than the exit code
+is what caught it. A fresh directory needed `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`, because doctest's
+`cmake_minimum_required` predates CMake 4 - **worth knowing that the working build directory could
+not be reproduced from scratch without that flag.**
+
+⚠ **`link_libraries(orbis::compat)` DOES NOT WORK IN THIS TREE.** Tempest export()s targets
+(spirv-cross among them) and CMake refuses to export a target whose link interface names something
+outside the export set. The archive goes in `CMAKE_EXE_LINKER_FLAGS` instead, which reaches exactly
+what needs it. Recorded in the module's own comment so the next person does not rediscover it.
 
 ---
 
