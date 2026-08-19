@@ -47,9 +47,14 @@ CFLAGS=("${BASE[@]}" -isystem "${ROOT}/include" -isystem "${TC}/include" -fPIC -
 
 # ⚠ libc++ ahead of the SDK's C headers, for the reason Tempest's toolchain file spends thirty lines
 # on: libc++ wraps them and #include_next's them, and the wrong order yields an integer-only std::abs
-# that truncates floats silently. -include stdlib.h because the SDK's headers are not self-contained.
+# that truncates floats silently.
+#
+# -include orbis_prefix.h because the SDK's <orbis/> headers are not self-contained. It REPLACES the
+# -include stdlib.h this port used to pass everywhere, and it is not a rename: measured over the
+# SDK's 189 orbis/ headers, stdlib.h leaves 16 of them uncompilable and this leaves 7 - and it does
+# it by declaring two type headers instead of a whole libc one. See include/orbis_prefix.h.
 CXXFLAGS=("${BASE[@]}" -isystem "${TC}/include/c++/v1" -isystem "${ROOT}/include"
-          -isystem "${TC}/include" -include stdlib.h -std=c++17 -fPIC -O2 -Wall -Wextra)
+          -isystem "${TC}/include" -include orbis_prefix.h -std=c++17 -fPIC -O2 -Wall -Wextra)
 
 # ---------------------------------------------------------------------------------- build
 mkdir -p "${OUT}"
@@ -76,7 +81,15 @@ if clang "${BASE[@]}" -isystem "${TC}/include" -fsyntax-only "${ROOT}/test/sizes
 fi
 echo "== sizes corrected, libc++'s types untouched, and the test fails without us"
 
-# 2. Every header stands alone - C or C++ as its own contents require.
+# 2. The three names added to headers the SDK already ships, each written the way its consumer
+#    writes it. Same shape as above: it has to fail without the overlay, or it is asserting nothing.
+clang "${CFLAGS[@]}" -fsyntax-only "${ROOT}/test/declarations.c"
+if clang "${BASE[@]}" -isystem "${TC}/include" -fsyntax-only "${ROOT}/test/declarations.c" 2>/dev/null; then
+  echo "!! declarations.c passes WITHOUT the overlay - the test proves nothing" >&2; exit 1
+fi
+echo "== malloc_usable_size, sigev_notify_function and ENODATA all reachable"
+
+# 3. Every header stands alone - C or C++ as its own contents require.
 for h in $(cd "${ROOT}/include" && find . -name '*.h' | sed 's|^\./||' | sort); do
   [[ "${h}" == "bits/alltypes.h" ]] && continue          # musl drives this one; not includable alone
   if grep -qE '^\s*(namespace|template)\b' "${ROOT}/include/${h}"; then
@@ -89,7 +102,7 @@ for h in $(cd "${ROOT}/include" && find . -name '*.h' | sed 's|^\./||' | sort); 
 done
 echo "== every header is self-contained"
 
-# 3. ⚠ The one thing cross-compiling cannot tell you: whether it WORKS. Run natively - this is what
+# 4. ⚠ The one thing cross-compiling cannot tell you: whether it WORKS. Run natively - this is what
 #    caught a missing <stdint.h> that the cross build had accepted through the PS4 headers.
 cc -funwind-tables -I"${ROOT}/include" -o "${WORK}/bt" "${ROOT}/src/orbis_backtrace.c" "${ROOT}/test/backtrace_host.c"
 "${WORK}/bt" >/dev/null

@@ -83,12 +83,56 @@ knot that had to be untied first.
 `orbis_log.h`. Nothing is registered by default and every call is a no-op until something registers,
 so a correction can report without knowing who is listening - and without including an engine header.
 
+### 2.7 Three names missing from headers the SDK already ships
+
+Each of these was a patch in a consumer before it was a line here, and each is written the way that
+consumer writes it - `test/declarations.c` compiles all three and must fail without the overlay.
+
+```
+malloc_usable_size      declared in <malloc.h> only. FreeBSD puts it in <stdlib.h>, and clang
+                        defines __FreeBSD__ for this triple, so portable code looks there
+sigev_notify_function   the FIELD exists - signal.h:144 has FreeBSD's union - only the two macros
+                        every caller writes are missing
+ENODATA                 absent, as on FreeBSD. Defined to ECONNREFUSED, which is what Mesa itself
+                        picks for FreeBSD, and 61 in this SDK's FreeBSD-numbered table
+```
+
+⚠ **`sigev_notify_function` makes code compile and proves nothing about delivery.** `timer_create` is
+real here (0x1a1 bytes in `libc.a`, calling `ktimer_create`), but whether `SIGEV_THREAD` spawns
+anything on this kernel is **unmeasured**. The CTS's `deTimer.c` patch stays until it is: a timer
+that never fires is worse than one that does not build.
+
+### 2.8 A prefix header, because the SDK's own headers are not self-contained
+
+The headers under `<orbis/>` name `size_t` and the `stdint` types without including them. The port
+has been passing `-include stdlib.h` everywhere to cover it. `orbis_prefix.h` replaces that, and the
+swap was measured over all 189 of them:
+
+```
+prefix                       orbis/ headers that fail to compile alone
+none                         26
+-include stdlib.h            16      <- what the port passes today
+-include orbis_prefix.h       7
+```
+
+Better coverage from a smaller injection - two type headers instead of a whole libc one, which
+matters because `stdlib.h` in every TU at global scope is exactly how this port once got an
+integer-only `std::abs`.
+
+**The remaining seven are SDK bugs**, not missing includes, and are the shortest upstream list here:
+`JpegEnc.h:17` says `OrbisJpgEncOutputInfo` for `OrbisJpegEncOutputInfo`; `SysCore.h:27` names an
+undefined `OrbisAppInfo`; `libc.h:352` and `LibcInternal.h:432` redeclare clang builtins
+(`__sync_fetch_and_add_16` and neighbours); `Font.h`, `FontFt.h` and `Usbd.h` round it out. No prefix
+reaches those, and shadowing a header to correct a typo inside it would hide the bug rather than fix
+it.
+
 ## 3. Using it
 
-Two flags, and both matter:
+Three flags, and all of them matter:
 
 ```
 -isystem <orbis-compat>/include        ahead of the SDK's include directory
+-include orbis_prefix.h                in place of the -include stdlib.h this port used to pass
 <orbis-compat>/build/liborbis-compat.a with --whole-archive
 ```
 
@@ -147,10 +191,12 @@ Both Mesa's `build.sh` and Tempest's toolchain file **refuse to build** if the o
 include/bits/alltypes.h     four pthread types corrected
 include/execinfo.h          backtrace(3)
 include/orbis_log.h         the logging hook
+include/orbis_prefix.h      the -include prefix, replacing -include stdlib.h
+include/{errno,signal,stdlib}.h   three names the SDK's own headers leave out
 include/orbis_{stat,mmap,mem,paths}.h
 include/machine/, sys/, pthread_np.h
 src/                        orbis_backtrace.c orbis_log.c orbis_{stat,mmap,mem,paths}.cpp
-test/                       sizes.c backtrace_host.c pthread_probe_host.c
+test/                       sizes.c declarations.c backtrace_host.c pthread_probe_host.c
 cmake/orbis-compat.cmake    locate / orbis::compat / verify, for consumers that use CMake
 build.sh                    produces build/liborbis-compat.a, then checks it
 ```
@@ -166,6 +212,8 @@ itself is the "does everything compile" check, so what follows is only what comp
 
 * the four types are corrected, and `pthread_mutex_t`/`cond`/`rwlock` are **not** - and the same test
   must FAIL without the overlay, or it proves nothing
+* `malloc_usable_size`, `sigev_notify_function` and `ENODATA` are all reachable the way their
+  consumers reach them - with the same negative control
 * every header is self-contained, compiled alone, C or C++ as its contents require
 * `backtrace` collects frames, bounds its buffer and formats addresses - **run natively**, with a
   positive control that deliberately overruns
@@ -256,6 +304,8 @@ is our workaround or their bug, which is a different question from whether it wi
 | the four pthread sizes | **OpenOrbis/musl** | measured; extends PR #29 but corrects fewer types, see §6.1 |
 | `struct stat` layout | **OpenOrbis/musl** | PR #35 covers `mode_t`; verify it covers the rest |
 | `machine/*`, `pthread_np.h`, `execinfo.h` | **OpenOrbis toolchain** | headers the SDK simply lacks |
+| `malloc_usable_size`, `sigev_notify_function`, `ENODATA` | **OpenOrbis/musl** | three names missing from headers that ship; each is one line |
+| the seven broken `<orbis/>` headers | **OpenOrbis toolchain** | real bugs, listed in §2.8. `orbis_prefix.h` itself stays until the other 19 are self-contained |
 | `sys/{cpuset,ioccom,param,sysctl}.h` | **OpenOrbis toolchain** | the same, for the FreeBSD side of the platform. `ioccom.h` is BSD-3-Clause and should be sent as FreeBSD's file, not as ours |
 | `_umtx_op` | **OpenOrbis/musl** | with §6.2 and §6.3, which change the story |
 | mmap, heap, no-cwd interposers | **OpenOrbis toolchain**, if they want them |
