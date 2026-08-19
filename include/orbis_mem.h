@@ -36,4 +36,8 @@ void memCensusBaseline();
 // verbatim, so it should be a phase name ("world zen parsed"), not a sentence.
 void memCensus(const char* where);
 
+/// What the thread interposer has done so far, in the same shape as the memory census. Costed:
+/// every raised thread reserves more address space than the platform would have given it.
+void memCensusThreads(const char* where);
+
 }

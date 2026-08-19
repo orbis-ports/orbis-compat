@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include "orbis_mem.h"
 #include "orbis_mmap.h"
+#include "orbis_thread.h"
 
 #include <orbis_log.h>
 
@@ -171,6 +172,22 @@ void orbis::memCensusBaseline() {
     flexLow.store(v,std::memory_order_relaxed);
     }
   report("boot");
+
+  // The thread probe rides here because this is the one place the overlay is already given control
+  // at boot, with a logger registered and before the threads that matter exist. It answers a
+  // question about memory too: what every thread on this platform gets by default. See
+  // include/orbis_thread.h.
+  threadStackProbe();
+  }
+
+void orbis::memCensusThreads(const char* where) {
+  unsigned long created = 0, raised = 0;
+  threadCounts(&created,&raised);
+  orbis_log("thread census [%s]: %lu created, %lu raised to %llu KiB - %llu KiB of address space "
+            "the platform's default would not have reserved",
+            where,created,raised,
+            (unsigned long long)(threadStackFloor()/1024),
+            (unsigned long long)(raised*(threadStackFloor()>65536 ? threadStackFloor()-65536 : 0)/1024));
   }
 
 void orbis::memCensus(const char* where) {

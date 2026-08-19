@@ -102,7 +102,50 @@ real here (0x1a1 bytes in `libc.a`, calling `ktimer_create`), but whether `SIGEV
 anything on this kernel is **unmeasured**. The CTS's `deTimer.c` patch stays until it is: a timer
 that never fires is worse than one that does not build.
 
-### 2.8 A prefix header, because the SDK's own headers are not self-contained
+### 2.8 A thread stack a shader compile fits in
+
+`scePthreadCreate` gives every thread **64 KiB**. A dEQP worker died inside
+`radv_graphics_shaders_compile` with about 72 KB of frame under it, and **every thread that compiles
+a pipeline on this console has the same cliff** - the title only survives it because Tempest sizes
+its own threads.
+
+Where that number comes from, and where it sits:
+
+```
+                 main thread    other threads
+Linux / glibc        8 MiB          8 MiB       both from RLIMIT_STACK (measured on the laptop)
+FreeBSD / libthr     8 MiB          2 MiB       THR_STACK_DEFAULT = sizeof(void*)/4 MB
+musl                 8 MiB        128 KiB       small on purpose; musl assumes small frames
+PS4, as shipped      2 MiB         64 KiB       measured on the console
+PS4, with this       2 MiB          2 MiB
+```
+
+`pthread_create` is **undefined in every member of the SDK's `libc.a`** and comes from
+`libkernel.so:0xda78`, so the 64 KiB is Sony's own choice rather than the libc's.
+
+**The policy: a thread that did not choose gets what the main thread has** - read at runtime, not
+hardcoded, so it follows the platform instead of a number someone picked. That is also exactly what
+glibc does with `RLIMIT_STACK`. `ORBIS_THREAD_STACK=<KiB>` overrides it; `0` interposes nothing, so
+an A/B needs no rebuild.
+
+⚠ **A fresh `pthread_attr_t` reports 65536 here**, so "asked for the default" and "asked for
+nothing" are indistinguishable and both are overridden. The consequence is one-directional: a caller
+that genuinely wanted 64 KiB gets more stack and still works, while the opposite mistake is a crash
+inside a shader compile.
+
+Measured on the console with the interposer in place - the probe asks `pthread_attr_get_np` about
+**live threads**, so these are what the kernel gave, not what the overlay intended:
+
+```
+attr = NULL              2097152 B      was 65536
+default-init attr        2097152 B      was 65536
+cost                     7936 KiB of address space across the run, under 8 threads
+```
+
+A failure at any step - `pthread_attr_init`, `setstacksize`, or a floor below `PTHREAD_STACK_MIN` -
+hands the original attr through untouched. **A broken interposer must behave like an absent one.**
+
+### 2.9 A prefix header, because the SDK's own headers are not self-contained
 
 The headers under `<orbis/>` name `size_t` and the `stdint` types without including them. The port
 has been passing `-include stdlib.h` everywhere to cover it. `orbis_prefix.h` replaces that, and the
@@ -192,6 +235,7 @@ include/bits/alltypes.h     four pthread types corrected
 include/execinfo.h          backtrace(3)
 include/orbis_log.h         the logging hook
 include/orbis_prefix.h      the -include prefix, replacing -include stdlib.h
+include/orbis_thread.h      the thread-stack floor, and the probe that measured it
 include/{errno,signal,stdlib}.h   three names the SDK's own headers leave out
 include/orbis_{stat,mmap,mem,paths}.h
 include/machine/, sys/, pthread_np.h
@@ -305,6 +349,7 @@ is our workaround or their bug, which is a different question from whether it wi
 | `struct stat` layout | **OpenOrbis/musl** | PR #35 covers `mode_t`; verify it covers the rest |
 | `machine/*`, `pthread_np.h`, `execinfo.h` | **OpenOrbis toolchain** | headers the SDK simply lacks |
 | `malloc_usable_size`, `sigev_notify_function`, `ENODATA` | **OpenOrbis/musl** | three names missing from headers that ship; each is one line |
+| the `pthread_create` stack floor | **OpenOrbis/musl** | `libc.a` has no `pthread_create` at all today, so this is an addition rather than a change. §2.8 has the cross-platform table anyone writing it up would need |
 | the seven broken `<orbis/>` headers | **OpenOrbis toolchain** | real bugs, listed in §2.8. `orbis_prefix.h` itself stays until the other 19 are self-contained |
 | `sys/{cpuset,ioccom,param,sysctl}.h` | **OpenOrbis toolchain** | the same, for the FreeBSD side of the platform. `ioccom.h` is BSD-3-Clause and should be sent as FreeBSD's file, not as ours |
 | `_umtx_op` | **OpenOrbis/musl** | with §6.2 and §6.3, which change the story |
