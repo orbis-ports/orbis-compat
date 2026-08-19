@@ -32,6 +32,23 @@ void orbis_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /// True when a logger is installed, for call sites that would otherwise build a message for nobody.
 int orbis_log_enabled(void);
 
+/// ⚠ A SECOND CHANNEL, FOR LINES THAT DESCRIBE A PROCESS ABOUT TO STOP EXISTING. The normal logger
+/// may be a datagram, and a datagram from a process the kernel is about to kill can fail to leave
+/// the machine at all. A crash handler needs a channel that has already written before it returns.
+/// Registered separately because only the application knows which of its channels that is.
+void orbis_set_log_fatal(orbis_log_fn fn);
+
+/// Writes through the fatal logger, or through the ordinary one if none was registered, or nowhere.
+void orbis_log_fatal(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
+/// What to do once a fatal event has been reported. The overlay reports; it does not decide whether
+/// to idle for a debugger, exit, or return - that is the application's policy, and on this console
+/// the choice matters (a title that exits gives the user a console error dialog and nothing else).
+/// `what` names the event: "terminate" or "signal". Returning from it means the overlay exits.
+typedef void (*orbis_fatal_action_fn)(const char *what);
+void orbis_set_fatal_action(orbis_fatal_action_fn fn);
+void orbis_fatal_action(const char *what);
+
 #ifdef __cplusplus
 }
 #endif
