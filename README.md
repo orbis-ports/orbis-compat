@@ -352,7 +352,8 @@ is our workaround or their bug, which is a different question from whether it wi
 | item | belongs to | note |
 |---|---|---|
 | the four pthread sizes | **OpenOrbis/musl** | measured; extends PR #29 but corrects fewer types, see §6.1 |
-| `struct stat` layout | **OpenOrbis/musl** | PR #35 covers `mode_t`; verify it covers the rest |
+| `struct stat` layout | **OpenOrbis/musl**, with a caveat | `mode_t` is the WHOLE defect - narrowing it to FreeBSD's `uint16_t` makes the struct match the kernel field for field (measured). ⚠ But it must ship WITH a rebuilt `libc++.a`, which reads `st_size` at the wide offset and is correct today; alone it breaks `std::filesystem` silently |
+| `lstat`, `fstatat` | **stays ours** | not misdeclared - ABSENT. `libc.a`'s `fstatat` sets errno 78 and returns -1, and `lstat` tail-jumps into it. No typedef revives them |
 | `machine/*`, `pthread_np.h`, `execinfo.h` | **OpenOrbis toolchain** | headers the SDK simply lacks |
 | `malloc_usable_size`, `sigev_notify_function`, `ENODATA` | **OpenOrbis/musl** | three names missing from headers that ship; each is one line |
 | the `pthread_create` stack floor | **OpenOrbis/musl** | `libc.a` has no `pthread_create` at all today, so this is an addition rather than a change. §2.8 has the cross-platform table anyone writing it up would need |

@@ -9,7 +9,7 @@ sideways. An idea that is not on this list goes to §Parking, not into the tree.
 
 An item is finished when its **Done when** line is true. Not before, and not "mostly".
 
-Status: **1 and 2 are done bar two deletions that are not mine to make; 3 is next.**
+Status: **1, 2 and 3 done; 4 is next.**
 
 ---
 
@@ -144,6 +144,47 @@ of the interposer may already be dead weight; the rest is what to send upstream 
 
 **Done when:** README §7's `struct stat` row names the specific fields that still need us, or the
 interposer shrinks.
+
+## DONE, 2026-08-19 — and the answer is "all of it, and none of it can be shipped"
+
+**ONE TYPEDEF EXPLAINS THE WHOLE SHEAR.** FreeBSD's `mode_t` is `uint16_t`; musl's is
+`unsigned int`. Dumping the record layout with the real toolchain, once as shipped and once with
+`mode_t` narrowed through the same `__DEFINED_` mechanism the pthread types use:
+
+```
+                as shipped     mode_t = u16     the kernel, measured on the console
+st_mode              8              8                  8
+st_nlink            12             10                 10
+st_uid              16             12                 12
+st_size             80             72 (0x48)          72 (0x48)
+st_blocks           88             80 (0x50)          80 (0x50)
+st_birthtim        112            104                104
+sizeof             128            120                120
+```
+
+Field for field. Every other difference is alignment following that one width.
+
+⚠ **AND IT CANNOT BE SHIPPED HERE.** The prebuilt `libc++.a` reads `st_size` at the WIDE offset and
+is right today - the console's own boot probe reads `Speech1.vdf` twice, through our interposer and
+through `std::filesystem`, and gets the same 722595072 with `ec=0`. Narrowing `mode_t` would move the
+field under prebuilt code that cannot be recompiled. **The same reason three pthread types were
+deliberately left alone in §2.1 of the README.**
+
+So the message for OpenOrbis is not "fix mode_t" but **"fix mode_t and rebuild libc++ in the same
+release"** - a mode_t change alone silently breaks `std::filesystem`, and silently is the word.
+
+**WHAT STAYS OURS EVEN AFTER THAT, and it is not about layout at all.** Fresh disassembly of the
+SDK's `libc.a`:
+
+```
+fstatat.lo   movl $0x4e,(%rax); movl $-1,%eax; ret    errno 78 = ENOSYS. A stub.
+lstat.lo     jmp fstatat                              so lstat is ENOSYS too
+fstat.lo     jmp _fstat                               forwards to libkernel, no translation
+stat         not in libc.a at all                     comes straight from libkernel
+```
+
+`lstat` and `fstatat` are not misdeclared, they are **absent**. No typedef revives them; those two
+implementations stay ours until OpenOrbis writes them.
 
 ---
 
