@@ -3,6 +3,7 @@
 #include "orbis_mem.h"
 #include "orbis_mmap.h"
 #include "orbis_thread.h"
+#include "orbis_timer.h"
 
 #include <orbis_log.h>
 
@@ -178,6 +179,7 @@ void orbis::memCensusBaseline() {
   // question about memory too: what every thread on this platform gets by default. See
   // include/orbis_thread.h.
   threadStackProbe();
+  timerProbe();
   }
 
 void orbis::memCensusThreads(const char* where) {

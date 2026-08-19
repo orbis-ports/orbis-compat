@@ -97,10 +97,16 @@ ENODATA                 absent, as on FreeBSD. Defined to ECONNREFUSED, which is
                         picks for FreeBSD, and 61 in this SDK's FreeBSD-numbered table
 ```
 
-⚠ **`sigev_notify_function` makes code compile and proves nothing about delivery.** `timer_create` is
-real here (0x1a1 bytes in `libc.a`, calling `ktimer_create`), but whether `SIGEV_THREAD` spawns
-anything on this kernel is **unmeasured**. The CTS's `deTimer.c` patch stays until it is: a timer
-that never fires is worse than one that does not build.
+⚠⚠ **`sigev_notify_function` makes code compile into a HANG, and that is measured.**
+`timer_create` with `SIGEV_THREAD` **never returns** on this kernel - no error code, no silent
+timer, the calling thread simply does not come back. Measured twice, the second time with our own
+`pthread_create` interposer disabled, because `libc.a`'s `timer_create` calls `pthread_create` and
+waits on a barrier and that confound had to be ruled out first.
+
+What does work, same probe: a `SIGEV_NONE` timer counts down correctly, and `timer_create` refuses
+`CLOCK_MONOTONIC` while accepting `CLOCK_REALTIME`. The macros stay because they are correct and
+`SIGEV_SIGNAL`/`SIGEV_NONE` callers need them; the CTS's `deTimer.c` patch stays permanently. PLAN.md
+§9 is the route to making the notification actually work - a userspace job here exactly as on glibc.
 
 ### 2.8 A thread stack a shader compile fits in
 
@@ -139,7 +145,7 @@ Measured on the console with the interposer in place - the probe asks `pthread_a
 ```
 attr = NULL              2097152 B      was 65536
 default-init attr        2097152 B      was 65536
-cost                     7936 KiB of address space across the run, under 8 threads
+cost                     31744 KiB of address space at 16 threads, the most a run has reached
 ```
 
 A failure at any step - `pthread_attr_init`, `setstacksize`, or a floor below `PTHREAD_STACK_MIN` -

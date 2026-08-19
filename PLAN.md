@@ -9,7 +9,7 @@ sideways. An idea that is not on this list goes to §Parking, not into the tree.
 
 An item is finished when its **Done when** line is true. Not before, and not "mostly".
 
-Status: **1 is done bar one deletion that is not mine to make; 2 is next.**
+Status: **1 and 2 are done bar two deletions that are not mine to make; 3 is next.**
 
 ---
 
@@ -104,7 +104,33 @@ function ran. Twenty lines, one console run, and it can ride along with any othe
 **Done when:** the answer is in the handoff, and either the CTS's `deTimer.c` patch is deleted (it
 fires) or the patch gains a comment citing this measurement (it does not).
 
-⚠ **Until then the patch stays.** A timer that never fires is worse than one that does not build.
+## DONE, 2026-08-19 — and the answer is worse than either option allowed for
+
+```
+SIGEV_NONE countdown      WORKS - 100 ms armed, read at 250 ms, nothing left
+CLOCK_MONOTONIC           REFUSED by timer_create; CLOCK_REALTIME is what answered
+SIGEV_THREAD              timer_create NEVER RETURNS
+```
+
+Not an error code, not a timer that stays silent - **the calling thread does not come back.** The
+title never reached its menu and the klog carried no fault, because nothing faulted.
+
+⚠ **The first run had a confound this repository introduced the same day.** `libc.a`'s
+`timer_create` calls `pthread_create` and then waits on a barrier, and `pthread_create` is §1's
+interposer now. A second run with `ORBIS_THREAD_STACK=0` hung identically - and re-measured the raw
+64 KiB default on the way, proving the disable knob really disables. **The platform is the cause;
+the interposer is exonerated.** Blaming Sony before ruling that out would have been guessing.
+
+The probe now sits behind `ORBIS_TIMER_PROBE=1`, off by default. ⚠ It should have been built that way
+from the start: it was written to measure something known to be unsupported, on the title's boot
+path, with no way out.
+
+`include/signal.h`'s macros STAY - they are correct, they name fields the struct really has, and
+SIGEV_SIGNAL/SIGEV_NONE callers need them. Their comment now says plainly that SIGEV_THREAD compiles
+into a hang.
+
+⚠ **Still open: the CTS's `deTimer.c` patch stays permanently and should gain a comment citing this**
+- part of §5, in an uncommitted tree.
 
 ---
 
@@ -198,6 +224,41 @@ The point of this repository is to shrink. §7 of the README maps every item to 
 
 ⚠ **Anything sent upstream has to be measured, not inferred.** Every number in README §2 and §6 came
 off the console; that is the bar, and it is the reason these are worth their maintainers' time.
+
+---
+
+## 9. Make SIGEV_THREAD actually work, in userspace, the way glibc does
+
+**Only after §8.** This is the expensive route, written down so it stops being an idea and starts
+being a decision someone can take later.
+
+`SIGEV_THREAD` is a userspace construction on glibc too - the kernel does not deliver callbacks, a
+helper thread does. Here the ingredients are all present and measured:
+
+```
+a SIGEV_NONE timer     counts down correctly            proven, §2
+threads                work, and now with a real stack  proven, §1
+CLOCK_REALTIME         is the clock timer_create takes  proven, §2
+```
+
+**The shape:** interpose `timer_create`; when `sigev_notify == SIGEV_THREAD`, create the underlying
+timer with `SIGEV_NONE`, keep the callback and its `sigval` in a record, and run a helper thread that
+sleeps to the expiry and calls back - repeating on `it_interval`. Because the returned handle is then
+ours rather than the kernel's, `timer_settime`, `timer_gettime`, `timer_delete` and
+`timer_getoverrun` have to be interposed with it and mapped through.
+
+**What it buys:** dEQP's upstream POSIX timer arm works, so the `deTimer.c` patch disappears instead
+of being explained; and every consumer of this SDK gets a notification type the platform advertises
+in its own header and does not implement.
+
+**What it costs:** five interposed functions and a thread per timer, to replace a patch that is five
+lines in one consumer. ⚠ That trade is the reason this is item 9 and not item 3 - and the reason it
+must not start until the cheap items are finished.
+
+**The cheap alternative, if this is never done:** interpose `timer_create` alone and have it return
+`-1`/`ENOTSUP` for `SIGEV_THREAD`. Twenty lines, and it turns an unrecoverable hang into a failure
+that portable code already handles - dEQP throws `NotSupportedError` and moves on. **A hang cannot be
+handled by anybody.**
 
 ---
 
