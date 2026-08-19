@@ -9,7 +9,7 @@ sideways. An idea that is not on this list goes to §Parking, not into the tree.
 
 An item is finished when its **Done when** line is true. Not before, and not "mostly".
 
-Status: **1-4 done; 5 is next, and it is the one blocked on the forks being committed.**
+Status: **1-4 done, 5 half done (the CTS half); Tempest's toolchain file is what is left of it.**
 
 ---
 
@@ -240,8 +240,19 @@ half of the wiring uncommitted, and 209 lines were lost that way once already.
 ```
 Tempest/cmake/ps4-openorbis.cmake   include(cmake/orbis-compat.cmake); orbis_compat_target();
                                     orbis_compat_verify(); -include orbis_prefix.h for stdlib.h
-VK-GL-CTS deMemory.c                DELETE - include/stdlib.h covers it
+VK-GL-CTS deMemory.c                DONE 2026-08-19 - reverted to upstream, overlay declares it
+VK-GL-CTS deThreadUnix.c            DONE 2026-08-19 - reverted to upstream, overlay raises the stack
+VK-GL-CTS deTimer.c                 KEPT, and its comment now cites the measurement rather than
+                                    claiming the struct lacks a field it has
 ```
+
+The CTS half is done and verified by building: `make debase dethread deutil` compiles upstream's own
+sources against the overlay, and `libdebase.a` still carries `U malloc_usable_size`. Its patch set is
+six files now, and two of them stopped being patches at all.
+
+⚠ Its `build-umtx/` tree - 9164 files, 2.3 GB, including a built `deqp-vk` and two eboot pairs from
+the umtx A/B - was STAGED in git. Removed from the index, kept on disk, `build*/` added to
+`.gitignore`. Deleting it from disk would cost a full dEQP rebuild and save nothing that matters.
 
 ⚠ `-lc` stays in `CMAKE_<LANG>_STANDARD_LIBRARIES`. Ahead of the overlay it is a
 `duplicate symbol: __mmap` link error - measured, on a throwaway project, not predicted.
