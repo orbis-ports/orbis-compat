@@ -83,6 +83,22 @@ knot that had to be untied first.
 `orbis_log.h`. Nothing is registered by default and every call is a no-op until something registers,
 so a correction can report without knowing who is listening - and without including an engine header.
 
+### 2.6b Why the mmap interposers are LOCAL in the linked image, and why that is right
+
+`__mmap`, `__munmap` and `__madvise` come out `LOCAL HIDDEN` in the title while `backtrace` and
+`pthread_create` - from the same archive, in the same link - come out `GLOBAL DEFAULT`. That looked
+like something we had done wrong and was carried in this file as an open question for a week.
+
+It is neither. **Eleven members of the SDK's `libc.a` reference those three names as
+`GLOBAL HIDDEN UND`**, because musl declares its internal allocator-to-kernel linkage hidden. An
+undefined *hidden* reference forces the definition that satisfies it to hidden, and a hidden symbol
+is emitted LOCAL. A minimal project where nothing from `libc.a` references `__mmap` keeps it global -
+which is how this was isolated rather than reasoned about.
+
+Hidden means "not exported dynamically". For a libc-internal name that is correct, and it says
+nothing about whether the interposition works: that is proven separately, by the memory census the
+console prints.
+
 ### 2.7 Three names missing from headers the SDK already ships
 
 Each of these was a patch in a consumer before it was a line here, and each is written the way that
@@ -107,6 +123,33 @@ What does work, same probe: a `SIGEV_NONE` timer counts down correctly, and `tim
 `CLOCK_MONOTONIC` while accepting `CLOCK_REALTIME`. The macros stay because they are correct and
 `SIGEV_SIGNAL`/`SIGEV_NONE` callers need them; the CTS's `deTimer.c` patch stays permanently. PLAN.md
 §9 is the route to making the notification actually work - a userspace job here exactly as on glibc.
+
+### 2.7b SIGEV_THREAD, delivered by a thread of ours
+
+`timer_create` with `SIGEV_THREAD` **never returns** on this kernel - it does not fail, it does not
+stay silent, the calling thread does not come back. So the overlay implements the notification the
+way glibc does: in userspace, over the two things the platform does provide.
+
+```
+countdown, SIGEV_NONE     rc 0, expired              the pass-through, exercised on every boot
+SIGEV_THREAD one-shot     fired 1 after 100 ms       a kernel timer underneath, for gettime
+SIGEV_THREAD interval     fired 5 in 300 ms @ 50 ms  overrun 0
+```
+
+⚠ **All five timer calls are interposed, so this repository is on the path of every timer in every
+consumer.** It has to be: once the handle is ours the others must understand it, and defining
+`timer_create` makes musl's unreachable. Ordinary timers are created through `ktimer_create` and come
+back as the plain kernel id - musl's own encoding for them - so nothing changes for a caller that
+never asked for `SIGEV_THREAD`.
+
+⚠ **The kernel's `sigevent` is not the SDK's**, and getting that wrong broke `timer_create`
+port-wide for one run. musl reorders the fields (`value` at 0x00, `signo` at 0x08, `notify` at 0x0c);
+the `SIGEV_*` values themselves pass through unchanged. `ORBIS_SIGEV_THREAD=0` turns the
+implementation off and refuses with `ENOTSUP` instead - still better than a hang, which nobody can
+handle.
+
+The CTS's `deTimer.c` patch is **gone**: `libdeutil.a` carries `U timer_create` again, which is
+upstream's own POSIX arm resolving here.
 
 ### 2.8 A thread stack a shader compile fits in
 
@@ -358,6 +401,7 @@ is our workaround or their bug, which is a different question from whether it wi
 | `machine/*`, `pthread_np.h`, `execinfo.h` | **OpenOrbis toolchain** | headers the SDK simply lacks |
 | `malloc_usable_size`, `sigev_notify_function`, `ENODATA` | **OpenOrbis/musl** | three names missing from headers that ship; each is one line |
 | the `pthread_create` stack floor | **OpenOrbis/musl** | `libc.a` has no `pthread_create` at all today, so this is an addition rather than a change. §2.8 has the cross-platform table anyone writing it up would need |
+| SIGEV_THREAD delivery | **OpenOrbis/musl** | musl's own SIGEV_THREAD path hangs here; ours is the userspace construction glibc uses. ⚠ Send the sigevent-reordering note with it - that is where an implementer will lose an afternoon |
 | the seven broken `<orbis/>` headers | **OpenOrbis toolchain** | real bugs, listed in §2.8. `orbis_prefix.h` itself stays until the other 19 are self-contained |
 | `sys/{cpuset,ioccom,param,sysctl}.h` | **OpenOrbis toolchain** | the same, for the FreeBSD side of the platform. `ioccom.h` is BSD-3-Clause and should be sent as FreeBSD's file, not as ours |
 | `_umtx_op` | **OpenOrbis/musl** | with §6.2 and §6.3, which change the story |
@@ -376,9 +420,6 @@ console; that is the bar.
   `include/sys/ioccom.h`, whose macros follow FreeBSD's (BSD-3-Clause) because they encode an ABI.
 * One GPU stall survives a working run - one submit in ~1200, fence stuck for four submissions, every
   address mapped. **Pre-existing**, not introduced here.
-* ⚠ `__mmap`, `__munmap` and `__madvise` are **local** (`t`) in the linked title rather than global.
-  Static linking is unaffected and the title runs, but there is no pre-move binary left to compare
-  against - this is unverified rather than known-good.
 * No CI. `./build.sh` is the whole of it, and it has to be run by hand.
 
 ## 9. Traps this cost

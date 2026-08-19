@@ -9,7 +9,7 @@ sideways. An idea that is not on this list goes to §Parking, not into the tree.
 
 An item is finished when its **Done when** line is true. Not before, and not "mostly".
 
-Status: **1-5 done; 6 is next.**
+Status: **1-5, 7 and 9 done. 6 (CI) deferred by the maintainer; 8 has no date.**
 
 ---
 
@@ -298,6 +298,22 @@ line from README §8 and stop carrying it.
 
 **Done when:** it is answered or gone. Not carried a third time.
 
+## DONE, 2026-08-19 — answered, and the answer is "correct as it stands"
+
+```
+libc.a   11 members reference __mmap/__munmap/__madvise as GLOBAL HIDDEN UND
+```
+
+musl declares its internal allocator-to-kernel linkage hidden. An undefined *hidden* reference forces
+the definition that satisfies it to hidden, and a hidden symbol is emitted LOCAL. Nothing we did.
+
+Isolated rather than reasoned about: in the SAME link, `backtrace` and `pthread_create` are
+`GLOBAL DEFAULT`, and in a minimal project where nothing from `libc.a` references `__mmap`, ours
+stays global. Two controls, one conclusion.
+
+The line is struck from README §8 and the finding written into §2.6b, so it is not carried a third
+time.
+
 ---
 
 ## 8. Upstream, headers first
@@ -352,6 +368,39 @@ must not start until the cheap items are finished.
 `-1`/`ENOTSUP` for `SIGEV_THREAD`. Twenty lines, and it turns an unrecoverable hang into a failure
 that portable code already handles - dEQP throws `NotSupportedError` and moves on. **A hang cannot be
 handled by anybody.**
+
+## DONE, 2026-08-19 — built, and the second attempt was the one that worked
+
+```
+countdown, SIGEV_NONE     rc 0, expired               the pass-through
+SIGEV_THREAD one-shot     fired 1 after 100 ms
+SIGEV_THREAD interval     fired 5 in 300 ms @ 50 ms   overrun 0
+```
+
+All five calls are interposed over `ktimer_*`. Handles for SIGEV_THREAD are pointers into a static
+table of eight, recognised by a range check rather than a tag bit, so musl's internal encoding (a
+pointer with the sign bit set, kernel id at offset 0xa0 of its thread structure) never has to be
+imitated. Ordinary timers go to `ktimer_create` and come back as the plain kernel id, which IS musl's
+encoding for them.
+
+⚠ **THE FIRST ATTEMPT BROKE timer_create FOR THE WHOLE PORT**, exactly the risk this item was
+declined over an hour earlier. Passing the SDK's public `struct sigevent` to `ktimer_create` returns
+EINVAL for every notification type. musl translates, and the translation is a REORDERING, not a
+renumbering - read out of its disassembly rather than guessed the second time:
+
+```
+ksev+0x00 = value    (SDK offset 8)      ksev+0x0c = notify   (SDK offset 0, UNCHANGED)
+ksev+0x08 = signo    (SDK offset 4)      ksev+0x10 = 0
+```
+
+My first hypothesis was FreeBSD-vs-musl numbering, and the log already refuted it: EINVAL for BOTH
+types, which a renumbering alone cannot explain. **The boot probe caught the regression in one run
+and the title still played** - which is the only reason putting this repository on the path of every
+timer in the port is defensible.
+
+⚠ **AND THE PROBE'S FIRST VERDICT WAS WRONG.** It said the CTS patch could go after one shot. dEQP's
+deTimer.c is a PERIODIC watchdog; repeating is a different code path. The interval control was added
+before anything was deleted, and only then did the patch go.
 
 ---
 

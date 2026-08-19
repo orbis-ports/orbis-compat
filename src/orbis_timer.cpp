@@ -120,14 +120,57 @@ void probeThreadNotify() {
             clock,rcSet,fired,waited);
 
   if(fired>0)
-    orbis_log("timer probe: VERDICT SIGEV_THREAD DELIVERS - dEQP's POSIX timer arm works here, and "
-              "the CTS's deTimer.c patch can go");
+    orbis_log("timer probe: VERDICT SIGEV_THREAD DELIVERS once - one shot arrived");
   else
     orbis_log("timer probe: VERDICT SIGEV_THREAD IS SILENT - it is accepted at creation and never "
               "calls back, which is the worst shape: code that compiles and hangs. The CTS's "
               "deTimer.c patch STAYS, and signal.h's macros are for compilation only");
 
   timer_delete(t);
+  }
+
+// Question 3: does it REPEAT? dEQP's deTimer.c is a periodic watchdog, not a one-shot, so the patch
+// in our CTS fork cannot be retired on the strength of a single notification. 50 ms interval, read
+// after 300 ms: five or six are expected and anything above two proves the rearm path.
+void probeInterval() {
+  g_fired.store(0,std::memory_order_relaxed);
+
+  struct sigevent ev;
+  memset(&ev,0,sizeof(ev));
+  ev.sigev_notify          = SIGEV_THREAD;
+  ev.sigev_notify_function = onTimer;
+
+  timer_t     t     = nullptr;
+  const char* clock = "";
+  if(createOn(&ev,&t,&clock)!=0) {
+    orbis_log("timer probe: interval - create FAILED, so the repeat question stays open");
+    return;
+    }
+
+  struct itimerspec its;
+  memset(&its,0,sizeof(its));
+  its.it_value.tv_nsec    =  50*1000000L;
+  its.it_interval.tv_nsec =  50*1000000L;
+  const int rcSet = timer_settime(t,0,&its,nullptr);
+
+  sleepMs(300);
+  const int fired = g_fired.load(std::memory_order_relaxed);
+
+  // Disarm before deleting, so the count cannot grow while the timer is being torn down.
+  struct itimerspec off;
+  memset(&off,0,sizeof(off));
+  timer_settime(t,0,&off,nullptr);
+  const int over = timer_getoverrun(t);
+  timer_delete(t);
+
+  orbis_log("timer probe: interval 50 ms over 300 ms - settime rc %d, fired %d time(s), overrun %d",
+            rcSet,fired,over);
+  if(fired>=2)
+    orbis_log("timer probe: VERDICT SIGEV_THREAD REPEATS - a periodic watchdog works here, so the "
+              "CTS's deTimer.c patch can go");
+  else
+    orbis_log("timer probe: VERDICT it fires ONCE and does not repeat - one-shot users are served, "
+              "dEQP's periodic watchdog is NOT, and its patch stays");
   }
 
 }
@@ -138,20 +181,16 @@ void orbis::timerProbe() {
 
   probeCountdown();
 
-  // ⚠ ANSWERED, AT THE COST OF ONE BLACK SCREEN, 2026-08-19 16:34:34. timer_create with
-  // SIGEV_THREAD DOES NOT RETURN on this kernel. Not an error, not a silent timer: the calling
-  // thread never comes back, the title never reaches its menu, and the klog records no fault of any
-  // kind because nothing faulted. The log stops mid-probe, one line after the countdown verdict.
-  //
-  // So it stays behind a knob, off by default. The answer is already in the tree - nobody needs to
-  // re-run it, and anybody who does gets a hung console rather than a measurement.
-  const char* e = getenv("ORBIS_TIMER_PROBE");
-  if(e!=nullptr && e[0]=='1') {
-    orbis_log("timer probe: ORBIS_TIMER_PROBE=1 - about to call timer_create(SIGEV_THREAD), which "
-              "HUNG this title on 2026-08-19. If this is the last line you see, that is why");
-    probeThreadNotify();
-    } else {
-    orbis_log("timer probe: SIGEV_THREAD not attempted - measured 2026-08-19, timer_create with it "
-              "NEVER RETURNS here. ORBIS_TIMER_PROBE=1 to try anyway");
-    }
+  // ⚠ THE PLATFORM'S HANGING PATH IS NO LONGER REACHABLE FROM HERE. src/orbis_sigev.cpp interposes
+  // timer_create and serves SIGEV_THREAD itself, so this probe now tests OUR implementation rather
+  // than the one that cost two black screens on 2026-08-19. ORBIS_SIGEV_THREAD=0 turns ours off,
+  // and then creation is refused with ENOTSUP - still not a hang.
+  probeThreadNotify();
+  probeInterval();
+
+  unsigned      live  = 0;
+  unsigned long fired = 0;
+  orbis::timerCounts(&live,&fired);
+  orbis_log("timer probe: %u SIGEV_THREAD timer(s) carried, %lu notification(s) delivered so far",
+            live,fired);
   }
