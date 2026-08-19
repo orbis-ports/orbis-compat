@@ -9,7 +9,7 @@ sideways. An idea that is not on this list goes to §Parking, not into the tree.
 
 An item is finished when its **Done when** line is true. Not before, and not "mostly".
 
-Status: **1, 2 and 3 done; 4 is next.**
+Status: **1-4 done; 5 is next, and it is the one blocked on the forks being committed.**
 
 ---
 
@@ -208,6 +208,28 @@ unchanged.
 **Done when:** both are here, OpenGothic includes them from the overlay, and a run shows the same
 two lines it showed before the move.
 
+## DONE, 2026-08-19 — the two lines came back identical
+
+```
+boot: ctype probe: tolower('A')=97('a') ... isspace(' ')=1 locale=C
+boot: ctype probe - VERDICT: case folding works
+boot: crash handlers installed (... sigaction rc=0, sigaltstack rc=-1 - NO alt stack ...)
+```
+
+Character for character what they were before the move, which is the whole test. The title reached
+3D and played. `og_ps4_boot.cpp` lost 159 lines and gained a note saying where they went.
+
+⚠ **A FOURTH SDK DEFECT FELL OUT OF IT.** `sa.sa_sigaction` does not compile as the SDK defines it:
+`signal.h:136` names the union member `__sa_sigaction`, `:142` defines the macro as
+`__sa_handler.sa_sigaction` - one underscore pair short. The moved code carried a hand-written
+workaround; the overlay corrects the macro instead, so the POSIX spelling works for every consumer.
+`test/declarations.c` has the negative control.
+
+**Two seams the move needed, and neither was invented for it:** `orbis_log_fatal` (the ordinary
+channel here is UDP, and a datagram from a process the kernel is about to kill may never leave) and
+`orbis_fatal_action` - **the overlay reports, the application decides what happens next**. On this
+console that choice is visible to the user: returning from `main()` is reported as CE-34878-0.
+
 ---
 
 ## 5. Point the consumers at what already exists
@@ -309,5 +331,9 @@ Ideas that are real but **not** to be started before §8 is done. Written here s
 interrupting.
 
 * interposing `getcwd` so a relative path means something, instead of `orbis_paths` anchoring
+* ⚠ `sigaltstack` returns -1 on this platform, so **a stack overflow still dies silently** - the
+  alternate stack the crash handler allocates is never installed. Now that the handler lives here
+  and threads have 2 MB (§1), finding out whether `sigaltstack` is unimplemented or merely refused
+  as called is an overlay question. It has been printed in every run for weeks and read by nobody.
 * the GPU stall, one submit in ~1200 - pre-existing, agreed to leave, and not an overlay concern
 * `__PS4__` -> `__ORBIS__` across the port (27 files) - not this repository's call alone

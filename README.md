@@ -242,6 +242,7 @@ include/execinfo.h          backtrace(3)
 include/orbis_log.h         the logging hook
 include/orbis_prefix.h      the -include prefix, replacing -include stdlib.h
 include/orbis_thread.h      the thread-stack floor, and the probe that measured it
+include/orbis_boot.h        the ctype probe and the crash handlers, out of a game that wrote them
 include/{errno,signal,stdlib}.h   three names the SDK's own headers leave out
 include/orbis_{stat,mmap,mem,paths}.h
 include/machine/, sys/, pthread_np.h
