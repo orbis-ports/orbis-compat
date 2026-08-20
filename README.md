@@ -269,13 +269,29 @@ Who does this today:
 
 ```
 Mesa        build-support/orbis/cross/orbis.ini.in    include only - it builds a static archive
-Tempest     cmake/ps4-openorbis.cmake                 include + archive, and refuses without them
-OpenGothic  inherits Tempest's toolchain file
-VK-GL-CTS   inherits Tempest's toolchain file
+OpenGothic  cmake/ps4-openorbis.cmake (this repo's)   include + archive + both opt-in targets
+VK-GL-CTS   cmake/ps4-openorbis.cmake (this repo's)   include + archive
+Tempest     nothing of its own - the title configures it
 ```
 
-Both Mesa's `build.sh` and Tempest's toolchain file **refuse to build** if the overlay is missing.
-`ORBIS_COMPAT_DIR` points them elsewhere; the default is `~/src/forks/orbis-compat`.
+Both Mesa's `build.sh` and the toolchain file **refuse to build** if the overlay is missing.
+`ORBIS_COMPAT_DIR` points them elsewhere; the default is `~/src-ps4/orbis-compat`.
+
+### 3.2 The two opt-in targets
+
+The archive is not everything here. Two directories declare targets a consumer adds **by name**,
+because they are policy rather than correction:
+
+```cmake
+add_subdirectory("${ORBIS_COMPAT_DIR}/vkloader" ps4-vkloader)  # the Vulkan C ABI over RADV
+add_subdirectory("${ORBIS_COMPAT_DIR}/optional" ps4-common)    # ps4-app: the klog/netlog tee
+```
+
+⚠ **Neither is in `liborbis-compat.a`, and that is the whole point.** Consumers link the archive
+with `--whole-archive`, so a member arrives whether it was wanted or not. `ps4-app` obliges the link
+to carry `-lSceNet` and decides that a dying process idles rather than returns; the CTS and Mesa
+should not inherit either for having asked for a working `mmap`. `ps4-app` registers itself into
+`orbis_log.h`'s hooks, which is how `src/` gets a channel while knowing nothing about it.
 
 ## 4. Layout
 
@@ -287,12 +303,20 @@ include/orbis_prefix.h      the -include prefix, replacing -include stdlib.h
 include/orbis_thread.h      the thread-stack floor, and the probe that measured it
 include/orbis_boot.h        the ctype probe and the crash handlers, out of a game that wrote them
 include/{errno,signal,stdlib}.h   three names the SDK's own headers leave out
-include/orbis_{stat,mmap,mem,paths}.h
+include/orbis_{stat,mmap,mem,paths,timer,netlog,clock}.h
+include/ps4_app.h           the console log channel's API - implemented in optional/, not src/
 include/machine/, sys/, pthread_np.h
-src/                        orbis_backtrace.c orbis_log.c orbis_{stat,mmap,mem,paths}.cpp
+src/                        THE ARCHIVE. orbis_backtrace.c orbis_log.c orbis_boot.cpp
+                            orbis_{stat,mmap,mem,paths,thread,timer,sigev,clock}.cpp
+optional/                   NOT the archive - policy, added by name. orbis_netlog.cpp ps4_app.cpp
+                            orbis_bigheap.c orbis_thread_atexit_stub.c, and a CMakeLists that
+                            declares ps4-netlog / ps4-app from the first two ONLY
+vkloader/                   the Vulkan C ABI: vkloader.c, 771 weak thunks, gen.py, a CMakeLists
+cmake/                      ps4-openorbis.cmake (the toolchain file), ps4-package.cmake,
+                            orbis-compat.cmake - locate / orbis::compat / verify
+scripts/ps4/                make-pkg.sh gen-icon0.py log-receiver.py logs.sh peerfilter.py
 test/                       sizes.c declarations.c backtrace_host.c pthread_probe_host.c
-cmake/orbis-compat.cmake    locate / orbis::compat / verify, for consumers that use CMake
-build.sh                    produces build/liborbis-compat.a, then checks it
+build.sh                    produces build/liborbis-compat.a from src/ ONLY, then checks it
 ```
 
 The C sources are written in four-space K&R and the C++ ones in Tempest's two-space style, because

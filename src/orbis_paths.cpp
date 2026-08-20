@@ -40,7 +40,7 @@ void anchorSayOnce(const char* original, const char* rewritten) {
   said = true;
   orbis_log("paths: relative paths are anchored - '%s' -> '%s'. This process has NO working "
           "directory (getcwd = ENOSYS) and a relative open returns EINVAL, so without this "
-          "nothing relative can be opened at all (task-88)",original,rewritten);
+          "nothing relative can be opened at all",original,rewritten);
   }
 
 const char* anchorPath(const char* path, char* buf, size_t bufSize) {

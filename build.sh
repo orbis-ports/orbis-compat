@@ -57,6 +57,11 @@ CXXFLAGS=("${BASE[@]}" -isystem "${TC}/include/c++/v1" -isystem "${ROOT}/include
           -isystem "${TC}/include" -include orbis_prefix.h -std=c++17 -fPIC -O2 -Wall -Wextra)
 
 # ---------------------------------------------------------------------------------- build
+#
+# ⚠ src/ ONLY. optional/ is deliberately not compiled into the archive: those files are policy rather
+# than correction - an unlimited libc heap that competes with the driver's arena, and a leaking
+# thread_local-destructor stub - and every consumer links this archive with --whole-archive. A
+# consumer that wants one adds that source to its own target, by name, having read why.
 mkdir -p "${OUT}"
 objs=()
 for src in "${ROOT}"/src/*.c;   do o="${OUT}/$(basename "${src}" .c).o";   clang   "${CFLAGS[@]}"   "${DEFS[@]+"${DEFS[@]}"}" -c "${src}" -o "${o}"; objs+=("${o}"); done

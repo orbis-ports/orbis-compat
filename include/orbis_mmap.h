@@ -9,7 +9,7 @@
 // first instruction of boot(). Loading NEWWORLD.ZEN wants more than 405 MiB of it and
 // was still climbing when it ran out. At that exact instant DIRECT memory had
 // 4601856 KiB free and had not moved since startup - the healthy pool was not the pool
-// that failed (task-58, console run 2026-08-04 15:50).
+// that failed (console run 2026-08-04 15:50).
 //
 // So the memory exists; malloc simply cannot reach it. This file makes it reachable,
 // entirely inside the eboot, without a line of upstream OpenGothic or Tempest change.
@@ -36,7 +36,7 @@
 // that is NOT musl's allocator - ZenKit's archive mmap, `__init_tls`, `catopen` - calls
 // plain `mmap`/`munmap` and never touches this file at all. That is the answer to "what
 // must be forwarded untouched", and it is answered by the symbol graph rather than by a
-// runtime test: the archive mount path that hung the console (task-51) is not reachable
+// runtime test: the archive mount path that hung the console is not reachable
 // from here.
 //
 // The archive rule does the rest. `mmap.lo` defines `__mmap`, a WEAK `mmap64` and a WEAK

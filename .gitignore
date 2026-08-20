@@ -1,1 +1,6 @@
 build/
+
+# Netlog captures. logs.sh writes to $PS4_LOG_DIR, default build-ps4-logs, RELATIVE to the
+# directory it is run from - so running it here leaves the captures here.
+build-ps4-logs/
+__pycache__/
