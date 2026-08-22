@@ -35,7 +35,10 @@ set(RADV_ARCHIVE "${ORBIS_MESA_BUILD}/src/amd/vulkan/libvulkan_radeon.a")
 if(NOT EXISTS "${RADV_ARCHIVE}")
   message(FATAL_ERROR
     "no RADV archive at ${RADV_ARCHIVE}\n"
-    "Build it first:  ~/src/mesa-ps4/build-support/orbis/build.sh\n"
+    "Build it first:  mesa-ps4/ps4/build.sh\n"
+    "⚠ This default is the patch-queue era's path and is almost certainly NOT the tree you are\n"
+    "  working in. orbis-compat/scripts/ps4/orbis-env.sh resolves the checkout and every entry\n"
+    "  point passes -DORBIS_MESA_BUILD explicitly; reaching this message means one did not.\n"
     "Or point -DORBIS_MESA_BUILD=<dir> at an existing build-orbis.")
 endif()
 if(NOT EXISTS "${ORBIS_MESA_SRC}/include/vulkan/vulkan.h")

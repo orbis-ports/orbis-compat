@@ -467,3 +467,48 @@ console; that is the bar.
    `~/.cache/tempest-og/build-ps4` still compiles `og_ps4_mmap.cpp` and links no overlay at all; the
    title's real build directory is `~/.cache/opengothic-ps4/build`. Read `link.txt` before concluding
    anything from a build tree.
+
+---
+
+## The build contract every repository in orbis-ports shares
+
+Each repository has one entry point, in the same place, taking the same two things from the
+environment. Clone the repositories next to each other and nothing needs setting at all:
+
+    ~/somewhere/
+      orbis-compat/          <- this one
+      mesa-ps4/              ps4/build.sh
+      VK-GL-CTS/             ps4/build.sh
+      OpenGothic/            ps4/build.sh
+      RetroArch/             ps4/build-core.sh
+
+    ORBIS_COMPAT_DIR   this checkout.   Searched: the variable, then ../orbis-compat, then
+                       ~/src-ps4/orbis-compat. Refused loudly, by name, if none of them is one.
+    OO_PS4_TOOLCHAIN   the OpenOrbis SDK. Default ~/.local/opt/openorbis, checked by link.x
+                       rather than by the directory - a toolchain missing its linker script fails
+                       hundreds of files later with an error that names nothing.
+
+    ORBIS_WORK         where builds write. Default ~/.cache/orbis-ports; never the checkout.
+    ORBIS_JOBS         parallelism. Default nproc.
+
+`scripts/ps4/orbis-env.sh` is what resolves and verifies all four; every entry point sources it.
+
+⚠ **Finding orbis-compat cannot itself be shared** - that is the chicken-and-egg of a shared
+prologue - so each entry point carries six lines of path search before it can source anything. Copy
+that block verbatim rather than inventing a variant; everything after it lives in one file precisely
+so the five copies cannot drift.
+
+### Deploying
+
+    scripts/ps4/deploy.sh --pkg <file> --name <short> [--also <local>:<remote>]...
+
+Packages go to `/data/pkg/<name>-YYYYMMDD.pkg`, which is the only directory this console installs
+from, and dated because it keeps every package ever installed and an undated name cannot be pointed
+at one build. Uploads are verified by reading back - sizes for packages, byte for byte for anything
+under a megabyte - and the script ends by saying whether the next step is **INSTALL + RUN** or
+**RUN, no install**. An old package under the same title id will otherwise run instead, silently.
+
+⚠ **Size does not prove freshness.** Three CTS packages built on three different days were all
+exactly 109117440 bytes. This checks that what arrived is what was sent; whether what was sent is
+what you meant is answered by the build script, which prints the driver it linked and when it was
+built.
