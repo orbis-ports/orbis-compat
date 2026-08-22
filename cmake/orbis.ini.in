@@ -1,0 +1,71 @@
+# meson cross file for OpenOrbis (PS4). Generated from this template by build.sh - do not edit the
+# generated copy, it is overwritten on every run.
+#
+# system = 'freebsd' because the triple IS freebsd12 and clang defines __FreeBSD__ 12 for it, so meson's
+# own FreeBSD arms and Mesa's build plumbing work with no invention on our part.
+#
+# ⚠ THAT IS A STATEMENT ABOUT THE BUILD SYSTEM, NOT ABOUT util/. The PS4 is a FreeBSD *kernel* with a
+# musl *libc*, and the two halves want opposite answers:
+#
+#   raw __FreeBSD__       - kept, and load-bearing. util/futex.{h,c} gate on it and take FreeBSD's
+#                           _umtx_op arm, which orbis-compat's sys/umtx.h makes real over pthreads. The
+#                           futex works rather than being disabled.
+#   DETECT_OS_FREEBSD     - deliberately NOT set for this platform, in util/detect_os.h. That macro is
+#                           what util/ uses to reach for FreeBSD's LIBC - sys/umtx.h's neighbours,
+#                           machine/cpu.h, kinfo_file, KERN_PROC_ARGS - none of which exist here.
+#
+# Do not collapse those two into "Mesa's FreeBSD support carries this port". Thirteen of the port's last
+# fourteen build errors were the second one being true when it should not have been.
+[binaries]
+c       = 'clang'
+cpp     = 'clang++'
+ar      = 'ar'
+strip   = 'strip'
+pkg-config = 'pkg-config'
+# cmake is DELIBERATELY unavailable. meson's dependency() falls back to cmake package files when
+# pkg-config finds nothing, and nix's devShell carries cmake configs for HOST libraries - which is how
+# zlib was 'found: YES 1.3.1.zlib-ng' for a PS4 build whose pkg-config correctly said no. A cross build
+# has no business consulting the host's cmake registry.
+cmake = 'false'
+
+[host_machine]
+system     = 'freebsd'
+cpu_family = 'x86_64'
+cpu        = 'x86_64'
+endian     = 'little'
+
+# ⚠ @ORBIS_COMPAT@ COMES FIRST, and it has to. orbis-compat's bits/alltypes.h corrects four pthread
+# types this SDK declares smaller than Sony writes, and it works by defining musl's own
+# __DEFINED_<name> guards before musl's copy is reached. Behind the SDK's directory it would compile,
+# do nothing, and say nothing.
+#
+# Only the include path: Mesa builds a static archive here, so the overlay's own liborbis-compat.a is
+# linked by whoever links the executable - the title and the CTS, both of which do.
+#
+# ⚠ -DENODATA=61 USED TO BE ON BOTH LINES ABOVE, and it is orbis-compat's errno.h now. Mesa defines
+# ENODATA itself for FreeBSD (radv_amdgpu_cs.c: `#define ENODATA ECONNREFUSED` under
+# DETECT_OS_FREEBSD), but this port deliberately does not set DETECT_OS_FREEBSD, so that arm never
+# fired and the value had to be forced from here. Same value - 61 IS ECONNREFUSED in this SDK's
+# FreeBSD-numbered errno table - in a header that says why, rather than a bare number on a command
+# line that does not.
+#
+# It is also the ONLY include path this build adds ahead of the SDK. @ORBIS_CROSS@ used to carry six
+# headers copied out of build-support/orbis/shims; they are orbis-compat's now, and the prefix holds
+# nothing but an empty pkgconfig directory.
+
+[built-in options]
+c_args   = ['--target=x86_64-pc-freebsd12-elf','--sysroot=@OO_PS4_TOOLCHAIN@','-fPIC','-funwind-tables','-D__PS4__','-DPS4','-D__ORBIS__','-D_BSD_SOURCE=1','-isysroot','@OO_PS4_TOOLCHAIN@','-isystem','@ORBIS_COMPAT@/include','-isystem','@OO_PS4_TOOLCHAIN@/include']
+cpp_args = ['--target=x86_64-pc-freebsd12-elf','--sysroot=@OO_PS4_TOOLCHAIN@','-fPIC','-funwind-tables','-D__PS4__','-DPS4','-D__ORBIS__','-D_BSD_SOURCE=1','-isysroot','@OO_PS4_TOOLCHAIN@','-isystem','@ORBIS_COMPAT@/include','-isystem','@OO_PS4_TOOLCHAIN@/include/c++/v1','-isystem','@OO_PS4_TOOLCHAIN@/include']
+# The link line is the SDK's own: no libc, lld, a linker script, and crt1.o last.
+#
+# ⚠ --sysroot IS LOAD-BEARING, not tidiness. -nostdlib removes the default LIBRARIES, not the default
+# library SEARCH PATHS, so ld.lld happily resolved -lelf to /usr/lib/libelf.so - the host's, for a
+# freebsd12-elf target - and Mesa's cc.find_library('elf') therefore reported YES. Every cc.find_library
+# in the tree was exposed to the same mistake. With --sysroot those paths become @OO_PS4_TOOLCHAIN@/usr/lib
+# and do not exist.
+c_link_args   = ['--target=x86_64-pc-freebsd12-elf','--sysroot=@OO_PS4_TOOLCHAIN@','-nostdlib','-fuse-ld=lld','-pie','-Wl,-m,elf_x86_64','-Wl,--script=@OO_PS4_TOOLCHAIN@/link.x','-Wl,--eh-frame-hdr','-Wl,--no-rosegment','-L@OO_PS4_TOOLCHAIN@/lib','-lc','-lkernel','-lc++','@OO_PS4_TOOLCHAIN@/lib/crt1.o']
+cpp_link_args = ['--target=x86_64-pc-freebsd12-elf','--sysroot=@OO_PS4_TOOLCHAIN@','-nostdlib','-fuse-ld=lld','-pie','-Wl,-m,elf_x86_64','-Wl,--script=@OO_PS4_TOOLCHAIN@/link.x','-Wl,--eh-frame-hdr','-Wl,--no-rosegment','-L@OO_PS4_TOOLCHAIN@/lib','-lc','-lkernel','-lc++','@OO_PS4_TOOLCHAIN@/lib/crt1.o']
+
+[properties]
+pkg_config_libdir = '@ORBIS_CROSS@/lib/pkgconfig'
+needs_exe_wrapper = true

@@ -5,8 +5,7 @@
  * The SDK's struct sigevent IS FreeBSD's - signal.h:144 has the union, with the thread-notification
  * function and its pthread_attr_t sitting in _sigev_un._sigev_thread. What is missing is the pair of
  * macros every caller actually writes, so portable code that fills in a SIGEV_THREAD event fails to
- * compile against a structure that could hold it perfectly well. dEQP's deTimer.c is one such caller
- * and carries a patch in our CTS fork for exactly this reason.
+ * compile against a structure that could hold it perfectly well. dEQP's deTimer.c is one such caller.
  *
  * ⚠⚠ THESE MACROS MAKE CODE COMPILE INTO A HANG, AND THAT IS MEASURED, NOT FEARED.
  * timer_create with sigev_notify = SIGEV_THREAD NEVER RETURNS on this kernel. Not an error code,
@@ -22,9 +21,14 @@
  * WHAT WORKS, same probe, same run: a SIGEV_NONE timer counts down properly - 100 ms armed, read at
  * 250 ms, nothing left. And timer_create REFUSES CLOCK_MONOTONIC; CLOCK_REALTIME is what answered.
  *
- * dEQP's deTimer.c patch in our CTS fork therefore stays permanently, with this citation. PLAN.md §9
- * is the route to making SIGEV_THREAD actually work, which is a userspace job here exactly as it is
- * on glibc.
+ * ⚠ AND THE CTS FORK DOES NOT PATCH deTimer.c, which this comment claimed twice until 2026-08-21.
+ * It does not need to: nothing in deqp-vk calls deTimer_*, so the linker drops the whole object and
+ * the SIGEV_THREAD arm never reaches the binary (measured - deTimer_* absent from a non-stripped
+ * deqp-vk whose deMutex_create and deThread_create are both present). Anything that DOES arm a timer
+ * here will hang, and will need its own arm; this header is where the reason is written down.
+ *
+ * PLAN.md §9 is the route to making SIGEV_THREAD actually work, which is a userspace job here
+ * exactly as it is on glibc.
  */
 #ifndef _ORBIS_COMPAT_SIGNAL_H
 #define _ORBIS_COMPAT_SIGNAL_H
