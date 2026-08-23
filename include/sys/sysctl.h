@@ -31,6 +31,9 @@
 #pragma once
 #include <sys/types.h>
 #include <stdlib.h>
+#if defined(__ORBIS__) || defined(__PS4__)
+#include <orbis_env.h>
+#endif
 #define CTL_HW      6
 #define HW_NCPU     3
 #define HW_PHYSMEM  5
@@ -49,7 +52,11 @@ extern "C" {
 
 #if defined(__ORBIS__) || defined(__PS4__)
 static inline int orbis_hw_ncpu(void) {
-  const char* const e = getenv("ORBIS_NCPU");
+  /* ⚠ NOT getenv(). The first caller of this override was a .prx, and a .prx has its own
+     static-musl `environ` that the executable's setenv() never touched - so the dial read
+     empty, the run reported the unmodified value, and it looked exactly like a knob with no
+     reader. orbis_env.h has the measurement. */
+  const char* const e = orbis_env_get("ORBIS_NCPU");
   if (e && e[0]) {
     const int n = atoi(e);
     if (n > 0)
