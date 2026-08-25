@@ -39,8 +39,21 @@ endian     = 'little'
 # __DEFINED_<name> guards before musl's copy is reached. Behind the SDK's directory it would compile,
 # do nothing, and say nothing.
 #
-# Only the include path: Mesa builds a static archive here, so the overlay's own liborbis-compat.a is
-# linked by whoever links the executable - the title and the CTS, both of which do.
+# ⚠ THE INCLUDE PATH IS NOT ENOUGH, AND THIS COMMENT USED TO SAY IT WAS. The reasoning below is sound
+# about the FINAL ARTIFACT and wrong about CONFIGURE: Mesa builds a static archive here, so the
+# overlay's own liborbis-compat.a really is linked by whoever links the executable - the title and the
+# CTS, both of which do. But meson's cc.has_function() is a LINK TEST, run long before any of that.
+#
+# unistd.h below does `#define sysconf orbis_sysconf` and puts orbis_sysconf in liborbis-compat.a. With
+# only the include path on the line, meson's probe for sysconf compiled fine and then died on
+# `undefined symbol: orbis_sysconf` - so HAVE_SYSCONF went unset, and util/os_misc.c fell into the arm
+# that util/detect_os.h:47 documents as "guarded by HAVE_SYSCONF, therefore unreachable". It was
+# reachable, and it broke the plain Vulkan-only build of Mesa with `#error Unsupported *BSD` - three
+# hundred files after the actual cause, which is why this is spelled out here rather than there.
+#
+# So the library goes on the link line too. Measured before doing it: this changes EXACTLY ONE
+# preprocessor define across a full Mesa build - -DHAVE_SYSCONF appears, nothing else moves. It is
+# ahead of -lc because it forwards to libc's own symbols and static link order is resolution order.
 #
 # ⚠ -DENODATA=61 USED TO BE ON BOTH LINES ABOVE, and it is orbis-compat's errno.h now. Mesa defines
 # ENODATA itself for FreeBSD (radv_amdgpu_cs.c: `#define ENODATA ECONNREFUSED` under
@@ -63,8 +76,8 @@ cpp_args = ['--target=x86_64-pc-freebsd12-elf','--sysroot=@OO_PS4_TOOLCHAIN@','-
 # freebsd12-elf target - and Mesa's cc.find_library('elf') therefore reported YES. Every cc.find_library
 # in the tree was exposed to the same mistake. With --sysroot those paths become @OO_PS4_TOOLCHAIN@/usr/lib
 # and do not exist.
-c_link_args   = ['--target=x86_64-pc-freebsd12-elf','--sysroot=@OO_PS4_TOOLCHAIN@','-nostdlib','-fuse-ld=lld','-pie','-Wl,-m,elf_x86_64','-Wl,--script=@OO_PS4_TOOLCHAIN@/link.x','-Wl,--eh-frame-hdr','-Wl,--no-rosegment','-L@OO_PS4_TOOLCHAIN@/lib','-lc','-lkernel','-lc++','@OO_PS4_TOOLCHAIN@/lib/crt1.o']
-cpp_link_args = ['--target=x86_64-pc-freebsd12-elf','--sysroot=@OO_PS4_TOOLCHAIN@','-nostdlib','-fuse-ld=lld','-pie','-Wl,-m,elf_x86_64','-Wl,--script=@OO_PS4_TOOLCHAIN@/link.x','-Wl,--eh-frame-hdr','-Wl,--no-rosegment','-L@OO_PS4_TOOLCHAIN@/lib','-lc','-lkernel','-lc++','@OO_PS4_TOOLCHAIN@/lib/crt1.o']
+c_link_args   = ['--target=x86_64-pc-freebsd12-elf','--sysroot=@OO_PS4_TOOLCHAIN@','-nostdlib','-fuse-ld=lld','-pie','-Wl,-m,elf_x86_64','-Wl,--script=@OO_PS4_TOOLCHAIN@/link.x','-Wl,--eh-frame-hdr','-Wl,--no-rosegment','-L@OO_PS4_TOOLCHAIN@/lib','-L@ORBIS_COMPAT@/build','-lorbis-compat','-lc','-lkernel','-lc++','@OO_PS4_TOOLCHAIN@/lib/crt1.o']
+cpp_link_args = ['--target=x86_64-pc-freebsd12-elf','--sysroot=@OO_PS4_TOOLCHAIN@','-nostdlib','-fuse-ld=lld','-pie','-Wl,-m,elf_x86_64','-Wl,--script=@OO_PS4_TOOLCHAIN@/link.x','-Wl,--eh-frame-hdr','-Wl,--no-rosegment','-L@OO_PS4_TOOLCHAIN@/lib','-L@ORBIS_COMPAT@/build','-lorbis-compat','-lc','-lkernel','-lc++','@OO_PS4_TOOLCHAIN@/lib/crt1.o']
 
 [properties]
 pkg_config_libdir = '@ORBIS_CROSS@/lib/pkgconfig'
