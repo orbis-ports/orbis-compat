@@ -186,11 +186,19 @@ if(NOT PS4_ABS_OVERLOAD_CHECKED AND NOT CMAKE_IN_TRY_COMPILE)
   set(PS4_ABS_OVERLOAD_CHECKED TRUE CACHE INTERNAL "std::abs(float) resolves correctly")
 endif()
 
+# ⚠ --script POINTS AT THIS OVERLAY'S SCRIPT, NOT THE SDK's. cmake/orbis-tls.ld is the SDK's link.x
+# with one rule corrected; its header says what and why. Short version: the SDK matches *(.tdata) and
+# not *(.tdata.*), so anything built with -fdata-sections - which is most modern C, Mesa included -
+# leaves its thread-locals as orphan sections, lld places them ahead of .data.rel.ro, and the
+# ALIGN(0x4000) that starts the RW segment stops starting anything. The console then refuses the
+# executable with "segment #1 is not page aligned", which reaches the user as "Cannot start the
+# application" and appears in no log the title can write.
+#
 # --no-rosegment: modern ld.lld emits a separate, non-page-aligned read-only PT_LOAD.
 # The PS4 loader rounds segment sizes to 0x1000 and maps raw p_vaddr, so that extra
 # segment overlaps the text segment and the image is rejected.
 set(PS4_LINK_FLAGS
-  "-nostdlib -fuse-ld=lld -pie -Wl,-m,elf_x86_64 -Wl,--script=${OO_PS4_TOOLCHAIN}/link.x -Wl,--eh-frame-hdr -Wl,--no-rosegment -L${OO_PS4_TOOLCHAIN}/lib")
+  "-nostdlib -fuse-ld=lld -pie -Wl,-m,elf_x86_64 -Wl,--script=${ORBIS_COMPAT_DIR}/cmake/orbis-tls.ld -Wl,--eh-frame-hdr -Wl,--no-rosegment -L${OO_PS4_TOOLCHAIN}/lib")
 
 # ⚠ orbis-compat with --whole-archive, and both halves matter. Nothing references backtrace() until
 # something crashes, so a linker that keeps only what is referenced drops it; and this has to be
