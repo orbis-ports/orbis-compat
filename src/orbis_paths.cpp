@@ -4,6 +4,8 @@
 
 #include <orbis_log.h>
 
+#include <orbis/libkernel.h>
+
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -11,23 +13,105 @@
 #include <cerrno>
 #include <cstdarg>
 #include <cstring>
+#include <cstdint>
+
+
+namespace {
+
+bool s_rootDecided = false;
+std::string s_rootOverride;
+
+// ⚠ VALIDATED, NOT TRUSTED. This becomes a directory name under /data, so a field of garbage
+// would create a directory of garbage - or, with a '/' in it, somewhere else entirely. A real
+// title id is nine characters of A-Z0-9; anything else is treated as "the call did not answer".
+bool titleIdLooksReal(const char* id) {
+  size_t n = 0;
+  for(; id[n]!='\0'; ++n) {
+    if(n>=9)
+      return false;
+    const char c = id[n];
+    if(!((c>='A'&&c<='Z') || (c>='a'&&c<='z') || (c>='0'&&c<='9')))
+      return false;
+    }
+  return n>0;
+  }
+
+// The console's own answer to "which title am I".
+//
+// ⚠ TitleId IS A FIXED 10-BYTE FIELD AND IS NOT PROMISED TO BE TERMINATED, so it is copied bounded
+// and terminated here rather than handed to a string function as it stands.
+std::string titleIdRoot() {
+  OrbisAppInfo  info = {};
+  const int32_t rc   = sceKernelGetAppInfo(getpid(), &info);
+  char          id[10] = {};
+  std::memcpy(id, info.TitleId, sizeof(info.TitleId) - 1);
+
+  if(rc!=0) {
+    orbis_log("paths: sceKernelGetAppInfo returned 0x%08x - no title id, so the anchor cannot be "
+            "named after this title",unsigned(rc));
+    return std::string();
+    }
+  if(!titleIdLooksReal(id)) {
+    orbis_log("paths: sceKernelGetAppInfo succeeded but the title id is not nine characters of "
+            "A-Z0-9 - ignored rather than made into a directory name");
+    return std::string();
+    }
+  orbis_log("paths: title id is '%s'",id);
+  return std::string("/data/") + id + "/";
+  }
+
+}
+
+extern "C" void orbis_set_anchor_root(const char* path) {
+  if(path==nullptr || path[0]!='/') {
+    orbis_log("paths: orbis_set_anchor_root('%s') ignored - the anchor must be an absolute path",
+            path==nullptr ? "(null)" : path);
+    return;
+    }
+  if(s_rootDecided) {
+    // Not applied, and not silent. Whatever has already been anchored went somewhere else, so a
+    // quiet late override would leave a process using two roots and no record of it.
+    orbis_log("paths: orbis_set_anchor_root('%s') arrived AFTER the anchor was already decided as "
+            "'%s' and is ignored. Call it before anything opens a file",path,
+            orbis::anchorRoot().c_str());
+    return;
+    }
+  s_rootOverride = path;
+  if(s_rootOverride.back()!='/')
+    s_rootOverride += '/';
+  }
 
 namespace orbis {
 
 const std::string& anchorRoot() {
   static std::string root = [](){
-    std::string r = "/data/OpenGothic/";
+    const char* how = "set by the application";
+    std::string r   = s_rootOverride;
+    if(r.empty()) {
+      r   = titleIdRoot();
+      how = "this title's id";
+      }
+    if(r.empty()) {
+      // ⚠ NOT ANOTHER TITLE'S NAME. This used to be '/data/OpenGothic/' unconditionally, which
+      // meant every other consumer of this overlay wrote into a directory belonging to a game it
+      // has nothing to do with.
+      r   = "/data/orbis-compat/";
+      how = "the fallback - the application named no anchor and the title id was not available";
+      }
+    s_rootDecided = true;
+
+    std::string dir = r.substr(0,r.size()-1);
     // 0777 rather than something tighter: this is a homebrew title's own directory on a dev
     // console and a umask nobody here controls decides the rest anyway.
-    if(mkdir("/data/OpenGothic",0777)==0)
-      orbis_log("paths: anchor '%s' created",r.c_str());
+    if(mkdir(dir.c_str(),0777)==0)
+      orbis_log("paths: anchor '%s' created (%s)",r.c_str(),how);
     else if(errno==EEXIST)
-      orbis_log("paths: anchor '%s'",r.c_str());
+      orbis_log("paths: anchor '%s' (%s)",r.c_str(),how);
     else
       // Not fatal and not silent. If this failed, every anchored path below will fail too and
       // the errno here is the one that explains all of them.
-      orbis_log("paths: anchor '%s' could not be created, errno %d - every relative path will "
-              "fail, and this is why",r.c_str(),errno);
+      orbis_log("paths: anchor '%s' (%s) could not be created, errno %d - every relative path will "
+              "fail, and this is why",r.c_str(),how,errno);
     return r;
     }();
   return root;

@@ -39,14 +39,41 @@
 //
 // ------------------------------------------------------------------ where, and why there
 //
-// `/data/OpenGothic/`. /data is the area GoldHEN gives homebrew and the probe confirms it
-// writable; the subdirectory is ours, so saves do not land among the game's own files - and
-// the game root may be a USB stick or /app0, neither of which is a place to put them.
+// /data is the area GoldHEN gives homebrew and the probe confirms it writable; a subdirectory
+// under it, so files do not land among the game's own - and the game root may be a USB stick or
+// /app0, neither of which is a place to put them.
+//
+// ------------------------------------------------------------------ ⚠ AND NOT A FIXED NAME
+//
+// It used to be the literal `/data/OpenGothic/`, compiled into an overlay that three other titles
+// now link. That is not a default, it is one title's name inside a shared library: RetroArch has
+// been creating `/data/OpenGothic/` on every boot and opening files in it, because a relative path
+// it opens - `Main Menu.png` among them - anchors there. Harmless-looking until the day two titles
+// pick the same relative filename, at which point one silently reads the other's file.
+//
+// So the root is decided in this order, and the choice is logged once:
+//
+//   1. orbis_set_anchor_root(), if the application called it before its first relative path.
+//      An application knows where its own data lives; nothing here can.
+//   2. `/data/<TITLEID>/` from sceKernelGetAppInfo. Needs no cooperation and cannot collide,
+//      because the console decides collisions by title id and so does this.
+//   3. `/data/orbis-compat/`. Reached only when 1 and 2 both failed. Deliberately not a title's
+//      name: a shared directory that says who made it is better than one that names a stranger.
+//
+// ⚠ 2 IS UNPROVEN ON THIS FIRMWARE. sceKernelGetAppInfo is declared by the SDK and this overlay
+// has been caught four times by a call that exists, links, and is refused at run time. The log
+// line reports what it returned whichever route wins, so one boot settles it.
+//
+// ⚠ THE C++ HALF IS GUARDED because the C-linkage setter below has to be reachable from C. A
+// frontend written in C is exactly the kind of consumer that needs to name its own anchor, and it
+// cannot include <string>.
+#ifdef __cplusplus
 #include <string>
 
 namespace orbis {
 
-// The anchor, with a trailing '/'. Created on first use; the mkdir's result is logged once.
+// The anchor, with a trailing '/'. Decided and created on first use; the choice, the mkdir's
+// result and what sceKernelGetAppInfo said are logged once.
 const std::string& anchorRoot();
 
 // Absolute paths are returned unchanged, relative ones prefixed with anchorRoot(). The
@@ -60,3 +87,22 @@ const char* anchorPath(const char* path, char* buf, size_t bufSize);
 void anchorSayOnce(const char* original, const char* rewritten);
 
 }
+#endif /* __cplusplus */
+
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/// Sets the directory relative paths are anchored under. A trailing '/' is added if missing, and
+/// the directory is created on first use like any other anchor.
+///
+/// ⚠ CALL IT BEFORE THE FIRST RELATIVE PATH, which in practice means before anything opens a file.
+/// The anchor is decided once, on first use, because it must be cheap inside stat(); a call that
+/// arrives after that decision cannot take effect and says so in the log rather than pretending.
+void orbis_set_anchor_root(const char *path);
+
+#ifdef __cplusplus
+}
+#endif
