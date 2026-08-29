@@ -92,10 +92,27 @@ static void ps4SignalAction(int sig, siginfo_t* info, void* uctx) {
   // and in this port's case it writes UDP only - a datagram from a process the kernel is about to
   // kill may never leave the machine. The fatal one is registered precisely to write synchronously
   // somewhere that survives.
-  orbis_log_fatal("fatal: signal %d - %s, si_code %d, fault address %p",
-                sig,signalName(sig),
-                info!=nullptr ? info->si_code : 0,
-                info!=nullptr ? info->si_addr : nullptr);
+  // ⚠ `info` IS NOT TRUSTED TO BE A POINTER, AND THAT IS NOT PARANOIA - IT WAS A SMALL INTEGER
+  // FOR THE WHOLE LIFE OF THIS FILE. The SDK's SA_SIGINFO was Linux's 4 while this kernel is
+  // FreeBSD's, which reads 4 as SA_RESETHAND - so the handler was installed one-shot and WITHOUT
+  // siginfo, and arrived with FreeBSD's original (int sig, int code, struct sigcontext *scp).
+  // `code` was 2. The null check below passed, `info->si_code` faulted inside the SIGSEGV handler
+  // with `reentered` already set, and the process _Exit(2)ed in silence. The absence is the proof:
+  // "crash handlers installed" appears in log after log and "fatal: signal" in none of them.
+  //
+  // include/signal.h now corrects the flag values, so this should be a real siginfo_t. The guard
+  // stays because a handler that dies is worse than a handler that says less: anything below a
+  // page cannot be a valid pointer, and on this platform a page is 16 KiB.
+  const bool info_is_pointer = (reinterpret_cast<uintptr_t>(info) >= 0x4000u);
+  if(info_is_pointer)
+    orbis_log_fatal("fatal: signal %d - %s, si_code %d, fault address %p",
+                  sig,signalName(sig),info->si_code,info->si_addr);
+  else
+    orbis_log_fatal("fatal: signal %d - %s, and NO siginfo: the second argument was %p, which is "
+                  "too small to be a pointer. The kernel called this handler with FreeBSD's "
+                  "original (sig, code, scp) signature, so SA_SIGINFO did not reach it - check the "
+                  "SA_* values in orbis-compat/include/signal.h against this SDK's bits/signal.h",
+                  sig,signalName(sig),(void*)info);
   orbis_fatal_action("signal");
   _Exit(2);
   }
