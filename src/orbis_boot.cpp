@@ -7,6 +7,7 @@
 // ps4_idle_forever -> orbis_fatal_action. The comments are the originals and say what they measured.
 #include <orbis_boot.h>
 
+#include <execinfo.h>
 #include <orbis_log.h>
 
 #include <clocale>
@@ -113,6 +114,58 @@ static void ps4SignalAction(int sig, siginfo_t* info, void* uctx) {
                   "original (sig, code, scp) signature, so SA_SIGINFO did not reach it - check the "
                   "SA_* values in orbis-compat/include/signal.h against this SDK's bits/signal.h",
                   sig,signalName(sig),(void*)info);
+  // ⚠ THE THIRD ARGUMENT CARRIES THE FAULTING INSTRUCTION AND WAS BEING THROWN AWAY, WHICH COSTS
+  // A DIAGNOSIS EVERY TIME THE HANDLER ACTUALLY WORKS. Once this handler catches a signal the
+  // process does not die, so the kernel writes NO dump - no registers, no rip, no module list.
+  // The very first crash it caught (a null dereference in swanstation) could be described as
+  // "si_code 1, address 0" and located no further than that.
+  //
+  // ⚠ AND THE LAYOUT CANNOT BE TAKEN FROM THE SDK's HEADERS. Code compiled here has already
+  // failed on `no member named 'mc_rip' in 'mcontext_t'` - the SDK ships musl's ucontext while the
+  // kernel passes FreeBSD's - so the offset of rip is not something to look up, it is something to
+  // measure. Hence a raw dump: the words are printed and whichever one lands inside a loaded
+  // module's text range IS the instruction pointer. Replace this with a named field the moment
+  // that offset is known and written down.
+  // ⚠ A BACKTRACE, BECAUSE THE CONTEXT DUMP DID NOT CONTAIN THE INSTRUCTION POINTER.
+  // Thirty-two words of the third argument were printed on hardware and not one of them fell
+  // inside the faulting module's .text - rip sits further in than that, and its offset cannot be
+  // taken from this SDK's headers because they describe musl's mcontext while the kernel passes
+  // FreeBSD's. Frame pointers are a shorter road to the same answer: the return addresses ARE in
+  // the module, so subtracting the base gives a function name.
+  //
+  // ⚠ AND THE MODULE BASE IS NOT IN THIS DUMP EITHER, BY DESIGN - the kernel writes no crash dump
+  // once this handler survives the signal. libretro-common/dynamic/dylib.c prints each core's
+  // retro_run address at load for exactly this purpose; subtract its address in the .elf.
+  {
+    void *frames[24];
+    const int n = backtrace(frames, (int)(sizeof(frames) / sizeof(frames[0])));
+    if(n > 0)
+      for(int i = 0; i < n; i += 4)
+      {
+        const int r = (n - i) < 4 ? (n - i) : 4;
+        orbis_log_fatal("fatal: frame[%02d..%02d] %016llx %016llx %016llx %016llx",
+                      i, i + r - 1,
+                      (unsigned long long)(r > 0 ? (uintptr_t)frames[i + 0] : 0),
+                      (unsigned long long)(r > 1 ? (uintptr_t)frames[i + 1] : 0),
+                      (unsigned long long)(r > 2 ? (uintptr_t)frames[i + 2] : 0),
+                      (unsigned long long)(r > 3 ? (uintptr_t)frames[i + 3] : 0));
+      }
+    else
+      orbis_log_fatal("fatal: backtrace returned %d frames", n);
+  }
+
+  if (uctx != nullptr)
+  {
+    // Kept, and widened to 64: rip is somewhere in here and finding it once turns every future
+    // crash into one line instead of a backtrace to read.
+    const uint64_t *w = reinterpret_cast<const uint64_t*>(uctx);
+    for(int base = 32; base < 64; base += 4)
+      orbis_log_fatal("fatal: ctx[%02d..%02d] %016llx %016llx %016llx %016llx",
+                    base, base + 3,
+                    (unsigned long long)w[base + 0], (unsigned long long)w[base + 1],
+                    (unsigned long long)w[base + 2], (unsigned long long)w[base + 3]);
+  }
+
   orbis_fatal_action("signal");
   _Exit(2);
   }
