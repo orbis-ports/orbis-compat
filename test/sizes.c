@@ -23,3 +23,22 @@ _Static_assert(sizeof(pthread_once_t) == 4, "pthread_once_t changed - re-measure
 /* The overlay must not displace the rest of alltypes.h. */
 _Static_assert(sizeof(size_t) == 8, "size_t lost");
 _Static_assert(sizeof(pthread_t) == 8, "pthread_t lost");
+
+/* The stack_t question, which is a LAYOUT question and not a size one - both orders are 24 bytes.
+ * The SDK's type must stay exactly as libc++ and every prebuilt archive saw it (ss_flags at 8),
+ * and the shim's type must be FreeBSD's (ss_size at 8), because the whole repair is the swap
+ * between them. See include/signal.h. */
+#include <signal.h>
+
+_Static_assert(sizeof(stack_t) == 24, "stack_t is no longer 24 bytes - re-derive the shim");
+_Static_assert(offsetof(stack_t, ss_flags) == 8, "the SDK's stack_t stopped being Linux-ordered");
+_Static_assert(sizeof(struct __orbis_stack_bsd) == 24, "the shim's stack_t must match FreeBSD's");
+_Static_assert(offsetof(struct __orbis_stack_bsd, ss_sp) == 0, "ss_sp moved");
+_Static_assert(offsetof(struct __orbis_stack_bsd, ss_size) == 8, "ss_size is not where FreeBSD puts it");
+_Static_assert(offsetof(struct __orbis_stack_bsd, ss_flags) == 16, "ss_flags is not where FreeBSD puts it");
+
+/* The constants that cross the same syscall, from oracles/freebsd9/sys_sys_signal.h. */
+_Static_assert(SS_ONSTACK == 0x0001, "SS_ONSTACK is not FreeBSD's");
+_Static_assert(SS_DISABLE == 0x0004, "SS_DISABLE is Linux's 2 again");
+_Static_assert(SA_ONSTACK == 0x0001, "SA_ONSTACK is Linux's 0x08000000 again");
+_Static_assert(SA_SIGINFO == 0x0040, "SA_SIGINFO is Linux's 4 again - handlers lose siginfo");

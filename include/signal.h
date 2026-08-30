@@ -94,6 +94,90 @@
 #undef  SA_NOMASK
 #define SA_NOMASK    SA_NODEFER
 
+/* ⚠⚠ AND stack_t's LAYOUT IS LINUX'S TOO, WHICH IS WHY sigaltstack RETURNS -1 ON THIS CONSOLE.
+ *
+ * The SA_* values above were the first half of this defect and fixing them did NOT make
+ * sigaltstack succeed, which is what sent the search here. Same header, same provenance,
+ * same mistake one field over.
+ *
+ *   include/bits/signal.h:91      struct sigaltstack { void *ss_sp; int ss_flags; size_t ss_size; };
+ *   FreeBSD 9 sys/sys/signal.h    typedef struct sigaltstack {
+ *     :358-365, the base Orbis OS      char *ss_sp; __size_t ss_size; int ss_flags; } stack_t;
+ *     is built on
+ *
+ * Twenty-four bytes either way, with ss_size and ss_flags EXCHANGED. So a caller that fills the
+ * SDK's struct the obvious way - ss_sp = buffer, ss_size = 65536, ss_flags = 0 - hands the kernel
+ *
+ *     ss_size  = 0            (read out of the SDK's ss_flags plus its padding)
+ *     ss_flags = 0x00010000   (the low half of the SDK's ss_size)
+ *
+ * and FreeBSD's kern_sigaltstack rejects any bit outside SS_DISABLE with EINVAL, in a test that
+ * runs BEFORE it ever looks at ss_size. INFERRED, not measured: the order of those two checks is
+ * read from FreeBSD's kern_sig.c, which is not among the oracles this port has a copy of. The
+ * struct layout, SS_*, SA_* and the errno numbers below ARE measured, from
+ * oracles/freebsd9/sys_sys_signal.h and sys_sys_errno.h.
+ *
+ * SS_DISABLE is wrong the same way: 2 is Linux's, 0x0004 is what this kernel tests for. SS_ONSTACK
+ * is 1 on both and needs nothing.
+ *
+ * ⚠ SIGSTKSZ IS ALSO LINUX'S AND IS DELIBERATELY LEFT ALONE. The SDK says 8192; FreeBSD 9 says
+ * MINSIGSTKSZ + 32768 = 34816. Nothing rejects the smaller number - the kernel enforces only
+ * MINSIGSTKSZ, which the SDK happens to have right at 2048 - so correcting it would only grow
+ * every `char buf[SIGSTKSZ]` in every consumer, on a console whose .bss is already a subject of
+ * its own. Anyone who wants the recommended size should ask for it by number and say why.
+ *
+ * The repair is a translating shim rather than a redeclared struct: `stack_t` is already typedef'd
+ * by the SDK header above and libc++ and every prebuilt archive were compiled against it, so the
+ * type stays exactly as it was and only the twenty-four bytes that cross the syscall boundary are
+ * reordered. A function-LIKE macro, so that `struct sigaltstack` as a type name still means what
+ * it says - an object-like macro would silently rewrite the tag as well.
+ */
+#undef  SS_DISABLE
+#define SS_DISABLE 0x0004
+
+struct __orbis_stack_bsd {
+        void         *ss_sp;
+        __SIZE_TYPE__ ss_size;
+        int           ss_flags;
+        int           __orbis_pad;
+};
+
+/* The real symbol, which comes from libkernel.so - the SDK's own libc.a compiles sigaltstack.c to
+ * an object with an EMPTY .text and no symbols at all, so there is no libc wrapper in between and
+ * nothing else to blame for the return code. `errno` is meaningful here for a reason worth writing
+ * down: libc.a's __errno_location is a single `jmp __error`, so the application's errno IS
+ * libkernel's errno rather than a musl-side copy that nothing ever writes. */
+extern int __orbis_sigaltstack_kernel(const struct __orbis_stack_bsd *__ss,
+                                      struct __orbis_stack_bsd *__oss) __asm__("sigaltstack");
+
+static __inline int __orbis_sigaltstack(const stack_t *__ss, stack_t *__oss)
+{
+        struct __orbis_stack_bsd __in;
+        struct __orbis_stack_bsd __out;
+        int __rc;
+
+        __in.ss_sp = 0; __in.ss_size = 0; __in.ss_flags = 0; __in.__orbis_pad = 0;
+        __out = __in;
+
+        if (__ss != 0) {
+                __in.ss_sp    = __ss->ss_sp;
+                __in.ss_size  = __ss->ss_size;
+                __in.ss_flags = __ss->ss_flags;
+        }
+
+        __rc = __orbis_sigaltstack_kernel(__ss  != 0 ? &__in  : 0,
+                                          __oss != 0 ? &__out : 0);
+
+        if (__oss != 0) {
+                __oss->ss_sp    = __out.ss_sp;
+                __oss->ss_size  = __out.ss_size;
+                __oss->ss_flags = __out.ss_flags;
+        }
+        return __rc;
+}
+
+#define sigaltstack(ss, oss) __orbis_sigaltstack((ss), (oss))
+
 #ifndef sigev_notify_function
 #define sigev_notify_function   _sigev_un._sigev_thread._function
 #endif

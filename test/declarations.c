@@ -47,12 +47,25 @@ static int is_no_data(int r)
     return r == -ENODATA;
 }
 
+/* sigaltstack, which the overlay replaces with a layout-translating shim. Written the way a caller
+ * writes it - by the POSIX name, with the tag still usable as a type - because the shim is a
+ * function-LIKE macro and an object-like one would have rewritten `struct sigaltstack` too. */
+static int alt_stack(void *buf, size_t n)
+{
+    struct sigaltstack ss;
+    ss.ss_sp    = buf;
+    ss.ss_size  = n;
+    ss.ss_flags = 0;
+    return sigaltstack(&ss, (stack_t *)0);
+}
+
 int main(void)
 {
     void *p = malloc(16);
     struct sigevent ev;
     arm_event(&ev, 0);
-    int n = (int)usable(p) + is_no_data(-ENODATA) + (install() == 0 ? 0 : 0);
+    int n = (int)usable(p) + is_no_data(-ENODATA) + (install() == 0 ? 0 : 0)
+          + (alt_stack(p, 16) == 0 ? 0 : 0);
     free(p);
     return n > 0 ? 0 : 1;
 }
