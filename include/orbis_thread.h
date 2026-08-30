@@ -53,6 +53,47 @@ size_t threadStackFloor();
 /// beside the memory census, because at this size the answer is also a memory number.
 void threadCounts(unsigned long *created, unsigned long *raised);
 
+/* ------------------------------------------------------------------ the alternate signal stack
+ *
+ * ⚠ AN ALTERNATE SIGNAL STACK IS PER THREAD, AND UNTIL NOW ONLY THE MAIN THREAD HAD ONE.
+ * orbis::installCrashHandlers() installs the SIGSEGV disposition, which FreeBSD keeps in the
+ * PROCESS, and one 64 KiB alternate stack, which FreeBSD keeps in td_sigstk, per THREAD. So a
+ * worker that overflowed its stack still faulted while the kernel tried to push a signal frame
+ * onto the stack that was already exhausted, and the process died with nothing written down -
+ * exactly the silence the main-thread fix was meant to end. A core's own thread is the one that
+ * matters: melonDS's renderer and flycast's emulator thread are where a deep recursion lives.
+ *
+ * THE STACK COMES OUT OF THE THREAD'S OWN STACK, AND THAT IS THE WHOLE MEMORY ARGUMENT.
+ * The interposer above already raises every thread to 2048 KiB. The trampoline declares a
+ * 64 KiB array in the OUTERMOST frame it owns and hands the kernel that, so:
+ *
+ *   * NOTHING IS ALLOCATED. No malloc during thread start, no pool to size, nothing served out of
+ *     the flexible pool this console measures at ~417 MiB, and nothing to compete with the direct
+ *     memory carve-outs orbis_mmap.cpp hands musl. The 64 KiB was already reserved by the
+ *     scePthreadCreate the line above it - a thread that used to have 2048 KiB of usable stack
+ *     now has 1984 KiB.
+ *   * NOTHING LEAKS. A per-thread heap buffer would need a free path, and the only free path for a
+ *     thread that exits without joining is a TSD destructor - machinery this port has not verified
+ *     runs on this kernel. A stack array is reclaimed by the thread's own exit, for free.
+ *   * IT IS AT THE FAR END FROM THE GUARD PAGE. The overflow that this exists to report happens at
+ *     the LOW end of the thread stack; the array sits above every frame the thread body will ever
+ *     push, so the one region the handler needs is the one region the overflow cannot have reached.
+ *     FreeBSD computes the handler's entry as ss_sp + ss_size and grows DOWN, which keeps it inside
+ *     the array.
+ *
+ * ⚠ IT IS SKIPPED FOR A THREAD WITH LESS THAN 256 KiB OF STACK, and that case is real: the
+ * interposer stands down entirely under ORBIS_THREAD_STACK=0, and a caller may ask for a small
+ * stack on purpose. Taking a quarter of a stack to report on the other three quarters is a worse
+ * trade than reporting nothing, so below that threshold the trampoline gets out of the way.
+ */
+
+/// How many threads installed an alternate signal stack of their own, how many were refused by the
+/// kernel, and how many were passed over for having too little stack to spare.
+void threadAltStacks(unsigned long *installed, unsigned long *failed, unsigned long *skipped);
+
+/// The size of the alternate signal stack each thread gets, in bytes.
+size_t threadAltStackSize();
+
 }
 
 #endif /* _ORBIS_THREAD_H */

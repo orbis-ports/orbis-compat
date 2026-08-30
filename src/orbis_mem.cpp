@@ -185,11 +185,17 @@ void orbis::memCensusBaseline() {
 void orbis::memCensusThreads(const char* where) {
   unsigned long created = 0, raised = 0;
   threadCounts(&created,&raised);
+  unsigned long altOk = 0, altFailed = 0, altSkipped = 0;
+  threadAltStacks(&altOk,&altFailed,&altSkipped);
   orbis_log("thread census [%s]: %lu created, %lu raised to %llu KiB - %llu KiB of address space "
-            "the platform's default would not have reserved",
+            "the platform's default would not have reserved; %lu on an alternate signal stack, "
+            "%lu refused, %lu too small to spare one - %llu KiB, taken from those threads' own "
+            "stacks rather than allocated",
             where,created,raised,
             (unsigned long long)(threadStackFloor()/1024),
-            (unsigned long long)(raised*(threadStackFloor()>65536 ? threadStackFloor()-65536 : 0)/1024));
+            (unsigned long long)(raised*(threadStackFloor()>65536 ? threadStackFloor()-65536 : 0)/1024),
+            altOk,altFailed,altSkipped,
+            (unsigned long long)(altOk*threadAltStackSize()/1024));
   }
 
 void orbis::memCensus(const char* where) {

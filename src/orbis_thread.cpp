@@ -8,7 +8,9 @@
 
 #include <pthread.h>
 #include <pthread_np.h>
+#include <errno.h>
 #include <limits.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <stddef.h>
 
@@ -103,6 +105,126 @@ size_t stackOfNewThread(const pthread_attr_t* attr, int* rcOut) {
   return r.stack;
   }
 
+// ------------------------------------------------------------------ the alternate signal stack
+//
+// See the block in the header for why this is carved out of the thread's own stack rather than
+// allocated. What is here is the mechanism and the one thing the header cannot state: whether this
+// kernel hands a new thread its creator's td_sigstk. INFERRED, NOT MEASURED - POSIX says the
+// alternate stack is not inherited across pthread_create, and FreeBSD 9's kern_thr.c bzeroes the
+// td_startzero..td_endzero range of a new thread, but sys/proc.h is not among the oracles this port
+// has a copy of and the field could equally sit in the td_startcopy range. So the first thread to
+// come through here READS BACK what it already had and prints it, and one boot settles it: an
+// ss_sp equal to the main thread's leaked heap buffer means inherited, a zero or SS_DISABLE means
+// not. Either way the install below is correct - it just says whether it was also necessary.
+constexpr size_t kAltStackSize = 64*1024;
+
+// Four times the alternate stack. A thread that cannot spare a quarter of itself is left alone.
+constexpr size_t kAltStackMinThreadStack = 4*kAltStackSize;
+
+std::atomic<unsigned long> g_altOk{0};
+std::atomic<unsigned long> g_altFailed{0};
+std::atomic<unsigned long> g_altSkipped{0};
+std::atomic<int>           g_altReported{0};
+
+struct StartArg {
+  void* (*fn)(void*);
+  void*   arg;
+  };
+
+// ⚠ noinline AND NOT MERELY A HINT. The 64 KiB array below must live in a frame that is created
+// once, at the base of this thread, and stays until the thread body returns. Inlined into the
+// trampoline it would still work; inlined into something the compiler decided to duplicate it
+// might not, and the cost of being explicit is nothing.
+__attribute__((noinline))
+void* runOnItsOwnAltStack(void* (*fn)(void*), void* arg) {
+  // ⚠ THE HANDLER ENTERS AT ss_sp + ss_size AND GROWS DOWN, so this array is the whole region the
+  // signal frame will ever touch, and it sits above every frame `fn` will push.
+  alignas(16) char alt[kAltStackSize];
+
+  // ⚠ TOUCHED ONCE, BECAUSE THE KERNEL WILL WRITE HERE WHILE DELIVERING A SIGNAL AND THAT IS THE
+  // ONE MOMENT A PAGE FAULT MUST NOT BE NEEDED. The frame above was made with a single `sub rsp`,
+  // which skips over every page it crosses, and nothing between here and the handler reads or
+  // writes the array. Four stores - the page here is 16 KiB (orbis_mmap.cpp:24) and this is 64 KiB
+  // - make the region resident before it is ever handed to the kernel. INFERRED that it matters:
+  // the thread stack IS mapped by scePthreadCreate, so a fault would very likely be serviced
+  // normally; four stores is a cheaper way to not depend on that than an experiment would be.
+  for(size_t i=0; i<sizeof(alt); i+=16*1024)
+    static_cast<volatile char*>(alt)[i] = 0;
+  static_cast<volatile char*>(alt)[sizeof(alt)-1] = 0;
+
+  stack_t prev;
+  prev.ss_sp = nullptr; prev.ss_size = 0; prev.ss_flags = 0;
+  errno = 0;
+  const int prevRc  = sigaltstack(nullptr,&prev);
+  const int prevErr = errno;
+
+  stack_t ss;
+  ss.ss_sp    = alt;
+  ss.ss_size  = sizeof(alt);
+  ss.ss_flags = 0;
+  errno = 0;
+  const int rc  = sigaltstack(&ss,nullptr);
+  const int err = errno;
+
+  if(rc==0)
+    g_altOk.fetch_add(1,std::memory_order_relaxed);
+  else
+    g_altFailed.fetch_add(1,std::memory_order_relaxed);
+
+  // Once per process. Every thread after the first would print the same three numbers, and this
+  // channel is UDP.
+  if(g_altReported.exchange(1,std::memory_order_relaxed)==0 && orbis_log_enabled()!=0)
+    orbis_log("thread alt stack: first worker thread - it INHERITED rc=%d errno=%d "
+              "ss_sp=%p ss_size=%llu ss_flags=%d (0=nothing set, 4=SS_DISABLE, a non-null sp is "
+              "the MAIN thread's buffer and means td_sigstk is copied on create); installed "
+              "%llu KiB of this thread's own stack at %p rc=%d errno=%d - %s",
+              prevRc,prevErr,prev.ss_sp,(unsigned long long)prev.ss_size,prev.ss_flags,
+              (unsigned long long)(sizeof(alt)/1024),(void*)alt,rc,err,
+              rc==0 ? "a stack overflow on a WORKER thread can now report itself"
+                    : "REFUSED - worker threads still die silently on an overflow");
+
+  void* r = fn(arg);
+
+  // ⚠ THIS IS NOT DECORATION. Without it the call above is a candidate for a tail call, which
+  // would pop this frame - and the kernel's td_sigstk still points into it - before `fn` runs.
+  // The barrier keeps `alt` live across the call and forbids the tail call outright.
+  __asm__ __volatile__("" :: "r"(alt) : "memory");
+
+  // Deliberately NOT disabled again on the way out. The thread is about to stop existing and
+  // td_sigstk goes with it, so there is nothing to dangle; and a crash during teardown is better
+  // reported on a stack that is still mapped than on one that is not.
+  return r;
+  }
+
+void* threadTrampoline(void* p) {
+  StartArg* sa                = static_cast<StartArg*>(p);
+  void*   (*fn)(void*)        = sa->fn;
+  void*     arg               = sa->arg;
+  free(sa);
+
+  // The ground truth rather than what the creator asked for: the interposer may have raised the
+  // request, refused to, or stood down entirely. pthread_attr_get_np on self is the same call the
+  // probe uses, and it is measured working on this console.
+  int          rc = 0;
+  const size_t sz = stackOfSelf(&rc);
+
+  if(rc==0 && sz>=kAltStackMinThreadStack)
+    return runOnItsOwnAltStack(fn,arg);
+
+  g_altSkipped.fetch_add(1,std::memory_order_relaxed);
+  return fn(arg);
+  }
+
+// scePthreadCreate, plus the one thing a trampoline adds: a payload to free when the thread that
+// was going to free it never starts.
+int createThread(pthread_t* thread, const pthread_attr_t* attr,
+                 void* (*entry)(void*), void* entryArg, StartArg* sa) {
+  const int rc = scePthreadCreate(thread,attr,entry,entryArg,"orbis");
+  if(rc!=0 && sa!=nullptr)
+    free(sa);
+  return rc;
+  }
+
 }
 
 namespace {
@@ -128,6 +250,17 @@ void orbis::threadCounts(unsigned long* created, unsigned long* raised) {
   if(raised !=nullptr) *raised  = g_raised.load(std::memory_order_relaxed);
   }
 
+void orbis::threadAltStacks(unsigned long* installed, unsigned long* failed,
+                            unsigned long* skipped) {
+  if(installed!=nullptr) *installed = g_altOk.load(std::memory_order_relaxed);
+  if(failed   !=nullptr) *failed    = g_altFailed.load(std::memory_order_relaxed);
+  if(skipped  !=nullptr) *skipped   = g_altSkipped.load(std::memory_order_relaxed);
+  }
+
+size_t orbis::threadAltStackSize() {
+  return kAltStackSize;
+  }
+
 // ------------------------------------------------------------------ the interposer
 //
 // ⚠ THIS DEFINITION WINS OVER libkernel's, and that is a linker rule rather than a trick: a symbol
@@ -142,9 +275,29 @@ extern "C" int pthread_create(pthread_t* thread, const pthread_attr_t* attr,
                               void* (*start)(void*), void* arg) {
   g_created.fetch_add(1,std::memory_order_relaxed);
 
+  // ⚠ THE TRAMPOLINE IS INSTALLED FIRST AND FOR EVERY PATH BELOW, INCLUDING THE ONE THAT RAISES
+  // NOTHING. The stack floor and the alternate signal stack are separate questions: a caller that
+  // chose its own 8 MB stack wants no interference with the size and still wants an overflow on
+  // that thread to be reportable. The only reason to skip is a stack too small to spare 64 KiB,
+  // and that is decided inside the trampoline where the real size is knowable.
+  //
+  // Two pointers do not fit in one, so the payload is malloc'd and freed by the thread itself on
+  // its first instruction - or by createThread() when the thread never starts. If the malloc
+  // fails, the caller's start routine is used unchanged: an interposer that cannot do its extra
+  // job must still do the original one.
+  StartArg* sa                = static_cast<StartArg*>(malloc(sizeof(StartArg)));
+  void*   (*entry)(void*)     = start;
+  void*     entryArg          = arg;
+  if(sa!=nullptr) {
+    sa->fn   = start;
+    sa->arg  = arg;
+    entry    = &threadTrampoline;
+    entryArg = sa;
+    }
+
   const size_t floor = resolveFloor();
   if(floor==0)
-    return scePthreadCreate(thread,attr,start,arg,"orbis");
+    return createThread(thread,attr,entry,entryArg,sa);
 
   // What did the caller ask for? A fresh attr reports the platform default here (65536, measured),
   // so this cannot distinguish "asked for the default" from "asked for nothing" - see the header for
@@ -154,13 +307,13 @@ extern "C" int pthread_create(pthread_t* thread, const pthread_attr_t* attr,
     want = 0;
 
   if(want>=floor)
-    return scePthreadCreate(thread,attr,start,arg,"orbis");
+    return createThread(thread,attr,entry,entryArg,sa);
 
   // Raise it. The caller's attr is const and may be reused for other threads, so the change goes on
   // a copy that lives exactly as long as this call.
   pthread_attr_t raised;
   if(pthread_attr_init(&raised)!=0)
-    return scePthreadCreate(thread,attr,start,arg,"orbis");
+    return createThread(thread,attr,entry,entryArg,sa);
 
   if(attr!=nullptr) {
     // Carry across what the caller DID choose. Anything not copied here is left at this platform's
@@ -172,8 +325,8 @@ extern "C" int pthread_create(pthread_t* thread, const pthread_attr_t* attr,
     }
 
   const int rcSet = pthread_attr_setstacksize(&raised,floor);
-  const int rc    = (rcSet==0) ? scePthreadCreate(thread,&raised,start,arg,"orbis")
-                               : scePthreadCreate(thread,attr,start,arg,"orbis");
+  const int rc    = (rcSet==0) ? createThread(thread,&raised,entry,entryArg,sa)
+                               : createThread(thread,attr,entry,entryArg,sa);
   if(rcSet==0 && rc==0)
     g_raised.fetch_add(1,std::memory_order_relaxed);
 

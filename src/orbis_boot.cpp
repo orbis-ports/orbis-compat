@@ -406,10 +406,21 @@ void orbis::installCrashHandlers() {
             "the layout was never the problem and this kernel is refusing the call itself",
             legacyRc,legacyErr,bsdErrnoName(legacyErr));
 
-  // ⚠ AND IT COVERS THIS THREAD ONLY. FreeBSD keeps the alternate stack in td_sigstk, per THREAD,
-  // while sigaction's disposition is per PROCESS - so a core running on a worker thread still
-  // overflows onto a stack that is already exhausted, whatever this call returned. Not fixed here
-  // because nothing has yet observed the working case; the honest next step is one more 64 KiB and
-  // one more sigaltstack from inside orbis_thread's start routine, once the console has confirmed
-  // that the call succeeds at all.
+  // ⚠ AND THIS CALL COVERS THIS THREAD ONLY. FreeBSD keeps the alternate stack in td_sigstk, per
+  // THREAD, while sigaction's disposition above is per PROCESS - so what is installed here is the
+  // whole crash reporter for every thread in the process, and an alternate stack for exactly one
+  // of them.
+  //
+  // THE OTHER THREADS ARE COVERED IN src/orbis_thread.cpp, and they had to wait for this call to
+  // be seen returning 0 on hardware before it was worth spending anything on them. The pthread
+  // interposer there now runs every thread it creates through a trampoline that gives itself
+  // 64 KiB out of its OWN stack and calls sigaltstack once - so no allocation, nothing to free,
+  // and a worker that overflows lands in the handler above rather than in silence. The header
+  // orbis_thread.h carries the memory argument; the "thread alt stack:" line at boot and the
+  // alternate-stack counts in the thread census are the evidence that it took.
+  //
+  // ⚠ THE MAIN THREAD KEEPS THE HEAP BUFFER ABOVE AND IS NOT MOVED ONTO ITS OWN STACK. This
+  // function is not the main thread's outermost frame - it returns, and an array declared here
+  // would be reclaimed while td_sigstk still pointed at it. The trampoline can do it because it
+  // IS the outermost frame of the thread it runs on.
   }
