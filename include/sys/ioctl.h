@@ -12,8 +12,16 @@
  * carries LINUX request numbers - FIONREAD is 0x541B there. This kernel is FreeBSD-derived and
  * encodes its requests differently: direction, length and a two-byte group in the number itself.
  * Handing a Linux request number to a FreeBSD ioctl does not fail cleanly; it names a different
- * request or none. Same shape as MAP_ANON being 0x0020 in the SDK's header and 0x1002 on this
- * kernel, which orbis_mmap.cpp has a static_assert about.
+ * request or none.
+ *
+ * ⚠ AND NOTE WHAT THE SDK DOES ELSEWHERE, because the mmap constants are the counter-example and
+ * mistaking them for a parallel case has already cost this port a wasted task. <sys/mman.h> is
+ * musl's there too and does carry Linux's MAP_ANON 0x20 - but it ends with
+ * `#include <bits/mman.h>`, and that header #undefs MAP_SHARED, MAP_PRIVATE, MAP_FIXED, MAP_ANON
+ * and the PROT_* set and gives them FreeBSD's values, so MAP_PRIVATE|MAP_ANON really is 0x1002
+ * and orbis_mmap.cpp's static_assert on it passes. The SDK corrected itself for mman. It does
+ * NOT for FION*, which it simply never defines - hence this file, and hence the derivation
+ * below rather than a copy.
  *
  * The values below are FreeBSD's own, derived rather than copied so the derivation can be checked:
  *
