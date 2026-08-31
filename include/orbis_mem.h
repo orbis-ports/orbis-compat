@@ -40,4 +40,24 @@ void memCensus(const char* where);
 /// every raised thread reserves more address space than the platform would have given it.
 void memCensusThreads(const char* where);
 
+/* ⚠ WHICH PRIMITIVE EATS libkernel's INTERNAL MEMORY, MEASURED DIRECTLY RATHER THAN CORRELATED.
+ *
+ * Four rounds of this investigation were spent dividing one number by another across two logs.
+ * That established the coefficient - the graphics driver loses ~146 bytes for every syncobj wait
+ * that expires, ~81 times a frame, until libkernel's internal pool goes from 14013728 bytes to 96
+ * and the process dies - and it excluded, by measurement, every kernel call the driver knowingly
+ * makes: submits, flips, mprotect, direct memory, usleep, and the log sink itself. What it could
+ * not do is name the CALL, because the failing path makes no libkernel call of its own. It locks a
+ * simple_mtx, reads a clock twice, and returns.
+ *
+ * So this stops correlating and measures. Each candidate primitive is run in isolation, N times,
+ * with sceKernelInternalMemoryGetAvailableSize read either side, and the answer is bytes per call
+ * with a control loop beside it. One boot names the consumer or clears every candidate on this
+ * list - and clearing them all is itself the finding, because it puts the allocation somewhere no
+ * counter in this port can reach.
+ *
+ * ⚠ NOT ON BY DEFAULT. It deliberately spends pool to find out who spends pool - a few hundred KiB
+ * of fourteen MiB - so it runs only when ORBIS_INTERNAL_MEM_PROBE is set in the env file. */
+void internalMemoryProbe();
+
 }

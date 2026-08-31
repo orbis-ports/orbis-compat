@@ -219,6 +219,48 @@ int64_t orbis_umtx_cond_probe_ms(void) { /* NOLINT(misc-definitions-in-headers) 
 
 static struct orbis_umtx_waiter orbis_umtx_waiters[ORBIS_UMTX_WAITERS];
 
+/* ⚠ WHAT THIS SHIM COSTS, COUNTED - BECAUSE IT IS NOW A SUSPECT AND NOT MERELY A MECHANISM.
+ *
+ * Measured on hardware 2026-08-31: libkernel's internal memory drains by ~146 bytes for every syncobj
+ * wait in the graphics driver that expires, ~81 times a frame, until the pool is empty and the process
+ * dies. The driver's own census cleared every sceKernel and sceVideoOut call it makes - submits, flips,
+ * mprotect, direct memory, usleep are all flat across leaking and non-leaking windows - and the log
+ * sink was cleared too, by budgeting the warning to 8 lines while the loss stayed identical.
+ *
+ * ⚠ WHICH LEAVES THE CALLS THE DRIVER DOES NOT KNOW IT MAKES. That wait's only libkernel-facing work
+ * is simple_mtx, and on this console simple_mtx's contended path is futex_wait, and futex_wait is THIS
+ * FILE - a pthread_cond_timedwait on one of the buckets above. So the question "what does the failing
+ * wait allocate" becomes "does scePthreadCondTimedwait give back what it takes when it TIMES OUT",
+ * which is exactly the shape of leak that survives a correct destroy: allocated on entry, released on
+ * the signalled return, and never on the expired one.
+ *
+ * These four counters are how that stops being a hypothesis. If timedwait timeouts arrive at the same
+ * rate as the driver's syncobj timeouts, this file is the consumer and the fix is ours - either
+ * ORBIS_UMTX_LIBKERNEL=1 to use Sony's own _umtx_op, or a wait that does not use a deadline. If they
+ * are flat while the driver's climb, this file is cleared and the allocation is inside libkernel's own
+ * syncobj-free path, which no counter here can reach.
+ *
+ * Relaxed atomics: these are read once every five seconds by a report, and an instrument that
+ * synchronises the thing it measures is not measuring it. */
+static unsigned long long orbis_umtx_n_wait;
+static unsigned long long orbis_umtx_n_timedwait;
+static unsigned long long orbis_umtx_n_timeout;
+static unsigned long long orbis_umtx_n_lock;
+
+static inline void orbis_umtx_bump(unsigned long long *c) {
+  __atomic_fetch_add(c, 1ull, __ATOMIC_RELAXED);
+  }
+
+/* Not static, for the same reason as the sentinel: one translation unit owns the table, and the
+   graphics driver reads these through a weak extern so it can print them beside the bytes lost. */
+void orbis_umtx_stats(unsigned long long *waits, unsigned long long *timedwaits, /* NOLINT(misc-definitions-in-headers) */
+                      unsigned long long *timeouts, unsigned long long *locks) {
+  if (waits     !=NULL) *waits     = __atomic_load_n(&orbis_umtx_n_wait,    __ATOMIC_RELAXED);
+  if (timedwaits!=NULL) *timedwaits= __atomic_load_n(&orbis_umtx_n_timedwait,__ATOMIC_RELAXED);
+  if (timeouts  !=NULL) *timeouts  = __atomic_load_n(&orbis_umtx_n_timeout, __ATOMIC_RELAXED);
+  if (locks     !=NULL) *locks     = __atomic_load_n(&orbis_umtx_n_lock,    __ATOMIC_RELAXED);
+  }
+
 uint64_t orbis_umtx_now_ns(void) { /* NOLINT(misc-definitions-in-headers) */
   struct timespec t;
   clock_gettime(CLOCK_REALTIME, &t);
@@ -338,6 +380,8 @@ static inline int _umtx_op(void* obj, int op, unsigned long val, void* uaddr, vo
       const volatile uint32_t *const word = (const volatile uint32_t *)obj;
       int ret = 0;
 
+      orbis_umtx_bump(&orbis_umtx_n_wait);
+      orbis_umtx_bump(&orbis_umtx_n_lock);
       pthread_mutex_lock(&b->lock);
       if (*word != (uint32_t)val) {
         /* Already changed - FreeBSD returns EWOULDBLOCK for this and Mesa treats any error as
@@ -358,7 +402,10 @@ static inline int _umtx_op(void* obj, int op, unsigned long val, void* uaddr, vo
            wrong. The caller's clock and the cond's clock are different numbers for the same instant;
            see orbis_umtx_deadline. */
         orbis_umtx_deadline(t, &deadline);
+        orbis_umtx_bump(&orbis_umtx_n_timedwait);
         ret = pthread_cond_timedwait(&b->cond, &b->lock, &deadline);
+        if (ret == ETIMEDOUT)
+          orbis_umtx_bump(&orbis_umtx_n_timeout);
         } else {
         ret = pthread_cond_wait(&b->cond, &b->lock);
         }
@@ -380,6 +427,7 @@ static inline int _umtx_op(void* obj, int op, unsigned long val, void* uaddr, vo
       /* ⚠ BROADCAST EVEN WHEN ASKED FOR ONE. Addresses share buckets, so signalling one waiter could
          wake the wrong sleeper and leave the right one asleep - a lost wakeup, which is the exact
          failure this file exists to remove. Waking everyone is correct and merely wasteful. */
+      orbis_umtx_bump(&orbis_umtx_n_lock);
       pthread_mutex_lock(&b->lock);
       pthread_cond_broadcast(&b->cond);
       pthread_mutex_unlock(&b->lock);

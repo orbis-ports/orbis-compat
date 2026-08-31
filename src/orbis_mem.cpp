@@ -7,6 +7,11 @@
 
 #include <orbis_log.h>
 
+#include <orbis_env.h>
+
+#include <errno.h>
+#include <pthread.h>
+#include <time.h>
 #include <sys/types.h>
 
 #include <atomic>
@@ -180,6 +185,7 @@ void orbis::memCensusBaseline() {
   // include/orbis_thread.h.
   threadStackProbe();
   timerProbe();
+  internalMemoryProbe();
   }
 
 void orbis::memCensusThreads(const char* where) {
@@ -270,4 +276,124 @@ void* operator new[](std::size_t n, std::align_val_t a, const std::nothrow_t&) n
   if(p==nullptr)
     announceOom(n,static_cast<size_t>(a));
   return p;
+  }
+
+
+// ------------------------------------------------------- libkernel's internal memory, per primitive
+//
+// See the block in include/orbis_mem.h for why this exists.
+
+namespace {
+
+// ⚠ NOT IN ANY SDK HEADER, SO THE SIGNATURE IS COVERED RATHER THAN GUESSED. libkernel.so exports it
+// (llvm-nm --dynamic, 2026-08-31) and orbis/libkernel.h does not declare it. Calling it with a real
+// pointer to a zeroed scratch satisfies both plausible Sony shapes - `int f(size_t*)` writes through
+// the pointer and returns 0, `size_t f(void)` ignores it and returns the size - and rsi/rdx are given
+// defined values so a third shape taking a length cannot be handed rubbish. Weak: a toolchain that
+// cannot resolve it yields a probe that says so instead of a link that fails.
+extern "C" unsigned long long sceKernelInternalMemoryGetAvailableSize(void*, unsigned long long,
+                                                                     unsigned long long)
+    __attribute__((weak));
+
+extern "C" int sceKernelUsleep(unsigned int);
+
+unsigned long long internalFree() {
+  if(&sceKernelInternalMemoryGetAvailableSize==nullptr)
+    return 0;
+  unsigned long long scratch[8] = {0,0,0,0,0,0,0,0};
+  const unsigned long long ret = sceKernelInternalMemoryGetAvailableSize(scratch,sizeof(scratch),0);
+  return (scratch[0]!=0) ? scratch[0] : ret;
+  }
+
+constexpr int kProbeIterations = 2000;
+
+// ⚠ THE CONTROL IS NOT OPTIONAL. Something else in the process may be spending the pool while this
+// runs, and without an empty loop measured the same way every candidate would inherit that drift and
+// the smallest ones would be indistinguishable from it.
+void measure(const char* what, void (*body)()) {
+  const unsigned long long before = internalFree();
+  for(int i=0; i<kProbeIterations; i++)
+    body();
+  const unsigned long long after = internalFree();
+
+  const long long lost = (long long)before - (long long)after;
+  orbis_log("internal memory probe: %-22s %lld bytes over %d call(s) = %lld bytes each "
+            "(%llu free after)",
+            what,lost,kProbeIterations,lost/kProbeIterations,after);
+  }
+
+void bodyNothing() {
+  // Not empty: an empty body is a loop the optimiser deletes, and a control that did not run is
+  // worse than no control at all.
+  static volatile int sink;
+  sink = sink + 1;
+  }
+
+void bodyClockMonotonic() {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC,&ts);
+  }
+
+void bodyClockRealtime() {
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME,&ts);
+  }
+
+pthread_mutex_t g_probeMutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t  g_probeCond  = PTHREAD_COND_INITIALIZER;
+
+void bodyMutexLock() {
+  pthread_mutex_lock(&g_probeMutex);
+  pthread_mutex_unlock(&g_probeMutex);
+  }
+
+// ⚠ THE ONE THIS PROBE WAS BUILT FOR, and the deadline is the epoch on purpose. A cond made with
+// default attributes may measure against CLOCK_REALTIME or CLOCK_MONOTONIC and this port has measured
+// BOTH answers in different processes; {0,0} is in the past on either, so the wait cannot block
+// whichever it turns out to be. A deadline built from the wrong clock would either return instantly
+// or hang for fifty-five years, and a probe must not be able to do the second.
+void bodyCondTimedwaitExpired() {
+  struct timespec epoch;
+  epoch.tv_sec  = 0;
+  epoch.tv_nsec = 0;
+  pthread_mutex_lock(&g_probeMutex);
+  pthread_cond_timedwait(&g_probeCond,&g_probeMutex,&epoch);
+  pthread_mutex_unlock(&g_probeMutex);
+  }
+
+void bodyUsleep() {
+  sceKernelUsleep(1);
+  }
+
+}
+
+void orbis::internalMemoryProbe() {
+  if(orbis_log_enabled()==0)
+    return;
+
+  const char* e = orbis_env_get("ORBIS_INTERNAL_MEM_PROBE");
+  if(e==nullptr || *e=='\0' || *e=='0')
+    return;
+
+  if(&sceKernelInternalMemoryGetAvailableSize==nullptr) {
+    orbis_log("internal memory probe: sceKernelInternalMemoryGetAvailableSize did not resolve - "
+              "nothing here can be measured");
+    return;
+    }
+
+  orbis_log("internal memory probe: %llu bytes free before any candidate runs. Each line below is "
+            "one primitive run %d times in isolation; the control must read ~0 or every other line "
+            "is inheriting somebody else's drift.",
+            internalFree(),kProbeIterations);
+
+  measure("control (nothing)",       &bodyNothing);
+  measure("clock_gettime MONOTONIC", &bodyClockMonotonic);
+  measure("clock_gettime REALTIME",  &bodyClockRealtime);
+  measure("pthread_mutex lock+unlock",&bodyMutexLock);
+  measure("sceKernelUsleep(1)",      &bodyUsleep);
+  measure("cond_timedwait EXPIRED",  &bodyCondTimedwaitExpired);
+
+  orbis_log("internal memory probe: done. A line reading ~146 bytes each is the consumer the "
+            "graphics driver's syncobj timeout has been feeding; all lines at ~0 means the "
+            "allocation is inside libkernel on a path this overlay never calls.");
   }
