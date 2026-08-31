@@ -6,13 +6,16 @@
 #include <orbis_log.h>
 #include <orbis_mem.h>
 
+#include <execinfo.h>
 #include <pthread.h>
 #include <pthread_np.h>
 #include <errno.h>
 #include <limits.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <string.h>
 
 #include <atomic>
 
@@ -27,6 +30,70 @@ size_t g_defaultStack = 0;
 
 std::atomic<unsigned long> g_created{0};
 std::atomic<unsigned long> g_raised{0};
+
+// ⚠ THE INTERPOSER USED TO LOG ONLY ON SUCCESS, AND THAT IS WHY THE ONE FAILURE THIS PORT KEEPS
+// MEETING HAS NEVER BEEN NAMED FROM OUR SIDE.
+//
+// Three times now a run has ended with the console's own log carrying thousands of
+//
+//     [ScePthread/System] Internal Memory is running out.     technote 235
+//
+// and nothing from this file at all: the census below prints at powers of two AND only when
+// scePthreadCreate returned 0, so a run whose every create fails prints exactly nothing and reads
+// as "no thread was ever created again". These two counters and the report under them exist so a
+// failing create is as loud as a succeeding one, and so the addresses of whoever asked for it are
+// in the log rather than in a guess.
+//
+// ⚠ AND THE ATTR COUNTER IS THE LEADING INDICATOR, not an afterthought. scePthreadAttrInit takes an
+// object out of the SAME pool a thread does, and it is asked for FIRST - twice per create through
+// this file, plus once per stackOfSelf. So the pool's floor is reached on an attr before it is
+// reached on a thread, and an attr failure is the earliest moment this file can say the pool is
+// going. Both are reported; which one moves first is itself the measurement.
+std::atomic<unsigned long> g_createFailed{0};
+std::atomic<unsigned long> g_attrFailed{0};
+
+// ⚠ POWERS OF TWO, BECAUSE THE FAILING CASE IS UNBOUNDED. Measured 2026-08-31: the console's klog
+// carried 8592 of these in 133 seconds, at a flat 117 per drain - the transport's quantum, not the
+// event rate, so the real rate is unknown and only bounded from below. A line per failure would put
+// this port's own channel in the same state. 1, 2, 4 ... 4096 is twelve lines for four thousand
+// failures and still shows the shape.
+bool powerOfTwo(unsigned long n) {
+  return n!=0 && (n & (n-1))==0;
+  }
+
+void reportPoolFailure(const char* what, int rc, unsigned long n) {
+  if(!powerOfTwo(n) || orbis_log_enabled()==0)
+    return;
+
+  // ⚠ ADDRESSES, AND THEY ARE THE POINT. There is no symbolisation on this console; the port logs
+  // each module's base as it loads and ps4/symbolise.py resolves these against the ELFs. Skipped
+  // frames: this function and the interposer that called it.
+  void* frames[10];
+  const int nf = orbis_unwind_collect(frames,10,2);
+
+  char   callers[10*20+1];
+  size_t at = 0;
+  callers[0] = '\0';
+  for(int i=0; i<nf; i++) {
+    const int n2 = snprintf(callers+at,sizeof(callers)-at,"%s%p",(i!=0) ? " " : "",frames[i]);
+    // snprintf reports what it WOULD have written, so a truncated write must stop the loop rather
+    // than advance past the end of the buffer.
+    if(n2<0 || (size_t)n2>=sizeof(callers)-at)
+      break;
+    at += (size_t)n2;
+    }
+
+  orbis_log("thread pool FAILURE: %s returned %d - %lu %s failure(s) so far "
+            "(%lu create(s) attempted, %lu raised, %lu attr failure(s), %lu create failure(s)). "
+            "⚠ THIS IS THE ScePthread INTERNAL POOL, technote 235, and it backs mutexes, condvars, "
+            "keys and attrs as well as threads. Callers, innermost first: %s",
+            what,rc,n,what,
+            g_created.load(std::memory_order_relaxed),
+            g_raised.load(std::memory_order_relaxed),
+            g_attrFailed.load(std::memory_order_relaxed),
+            g_createFailed.load(std::memory_order_relaxed),
+            callers);
+  }
 
 // The size a thread that did not choose should get. Resolved once, on first use, because the env
 // file that can override it is applied by the title early but not necessarily before the first
@@ -68,7 +135,12 @@ size_t stackOfSelf(int* rcOut) {
   size_t         sz = 0;
 
   const int rcInit = pthread_attr_init(&a);
-  if(rcInit!=0) { *rcOut = rcInit; return 0; }
+  if(rcInit!=0) {
+    reportPoolFailure("pthread_attr_init",rcInit,
+                      g_attrFailed.fetch_add(1,std::memory_order_relaxed)+1);
+    *rcOut = rcInit;
+    return 0;
+    }
 
   const int rcGet = pthread_attr_get_np(pthread_self(),&a);
   if(rcGet==0)
@@ -220,8 +292,14 @@ void* threadTrampoline(void* p) {
 int createThread(pthread_t* thread, const pthread_attr_t* attr,
                  void* (*entry)(void*), void* entryArg, StartArg* sa) {
   const int rc = scePthreadCreate(thread,attr,entry,entryArg,"orbis");
-  if(rc!=0 && sa!=nullptr)
-    free(sa);
+  if(rc!=0) {
+    // The payload the thread that never started was going to free. Freed here whether or not
+    // anything is logged - the report is diagnostics, this is correctness.
+    if(sa!=nullptr)
+      free(sa);
+    reportPoolFailure("scePthreadCreate",rc,
+                      g_createFailed.fetch_add(1,std::memory_order_relaxed)+1);
+    }
   return rc;
   }
 
@@ -243,6 +321,11 @@ size_t orbis::threadDefaultStack() {
 
 size_t orbis::threadStackFloor() {
   return resolveFloor();
+  }
+
+void orbis::threadFailures(unsigned long* createFailed, unsigned long* attrFailed) {
+  if(createFailed!=nullptr) *createFailed = g_createFailed.load(std::memory_order_relaxed);
+  if(attrFailed  !=nullptr) *attrFailed   = g_attrFailed.load(std::memory_order_relaxed);
   }
 
 void orbis::threadCounts(unsigned long* created, unsigned long* raised) {
@@ -312,8 +395,12 @@ extern "C" int pthread_create(pthread_t* thread, const pthread_attr_t* attr,
   // Raise it. The caller's attr is const and may be reused for other threads, so the change goes on
   // a copy that lives exactly as long as this call.
   pthread_attr_t raised;
-  if(pthread_attr_init(&raised)!=0)
+  const int rcAttr = pthread_attr_init(&raised);
+  if(rcAttr!=0) {
+    reportPoolFailure("pthread_attr_init",rcAttr,
+                      g_attrFailed.fetch_add(1,std::memory_order_relaxed)+1);
     return createThread(thread,attr,entry,entryArg,sa);
+    }
 
   if(attr!=nullptr) {
     // Carry across what the caller DID choose. Anything not copied here is left at this platform's

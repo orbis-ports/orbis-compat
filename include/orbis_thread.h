@@ -53,6 +53,21 @@ size_t threadStackFloor();
 /// beside the memory census, because at this size the answer is also a memory number.
 void threadCounts(unsigned long *created, unsigned long *raised);
 
+/* ⚠ AND HOW MANY DID NOT HAPPEN, WHICH IS THE HALF THIS FILE USED TO LOSE. The census above prints
+ * at powers of two and only when the create SUCCEEDED, so a process whose pool has run out prints
+ * nothing at all and the log reads as though nothing had asked for a thread again. It has read that
+ * way three times in this port: 2026-08-28 (mupen64plus-next), 2026-08-28 (Play!) and 2026-08-31
+ * (melonDS DS), each with thousands of `[ScePthread/System] Internal Memory is running out` in the
+ * console's own klog and not one line from here.
+ *
+ * ⚠ AND THE ATTR COUNT IS THE ONE TO READ FIRST. scePthreadAttrInit draws on the SAME pool and is
+ * asked for before the thread is, so it fails first. If attrs are failing and creates are not, the
+ * pool is going but is not yet empty - which is the only window in which anything can be measured.
+ * If NEITHER moves while the console logs the pool running out, the objects being leaked are not
+ * threads and not attrs: they are mutexes, condvars or keys, and the leak is somewhere this file
+ * cannot see - which is a narrow, useful answer rather than an absence. */
+void threadFailures(unsigned long *createFailed, unsigned long *attrFailed);
+
 /* ------------------------------------------------------------------ the alternate signal stack
  *
  * ⚠ AN ALTERNATE SIGNAL STACK IS PER THREAD, AND UNTIL NOW ONLY THE MAIN THREAD HAD ONE.
