@@ -11,6 +11,7 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <sys/types.h>
 
@@ -310,16 +311,20 @@ constexpr int kProbeIterations = 2000;
 // ⚠ THE CONTROL IS NOT OPTIONAL. Something else in the process may be spending the pool while this
 // runs, and without an empty loop measured the same way every candidate would inherit that drift and
 // the smallest ones would be indistinguishable from it.
-void measure(const char* what, void (*body)()) {
+void measureN(const char* what, void (*body)(), int n) {
   const unsigned long long before = internalFree();
-  for(int i=0; i<kProbeIterations; i++)
+  for(int i=0; i<n; i++)
     body();
   const unsigned long long after = internalFree();
 
   const long long lost = (long long)before - (long long)after;
-  orbis_log("internal memory probe: %-22s %lld bytes over %d call(s) = %lld bytes each "
+  orbis_log("internal memory probe: %-26s %lld bytes over %d call(s) = %lld bytes each "
             "(%llu free after)",
-            what,lost,kProbeIterations,lost/kProbeIterations,after);
+            what,lost,n,lost/n,after);
+  }
+
+void measure(const char* what, void (*body)()) {
+  measureN(what,body,kProbeIterations);
   }
 
 void bodyNothing() {
@@ -365,6 +370,36 @@ void bodyUsleep() {
   sceKernelUsleep(1);
   }
 
+/* ⚠ THE TWO THE LEDGER POINTED AT, AND NEITHER HAS EVER BEEN WEIGHED.
+ *
+ * The frame ledger put 9073 of 9280 bytes a frame in the two segments above the graphics driver - the
+ * frontend between frames, and the draw/translate/record path - with every segment inside the driver
+ * costing nothing. Bytes cannot leave libkernel's internal pool without a libkernel call, and the only
+ * libkernel calls those segments make that this port has never counted are the ones musl's allocator
+ * makes through orbis_mmap.cpp when a request cannot be served from a carve-out.
+ *
+ * ⚠ SIZED ABOVE musl's mmap THRESHOLD ON PURPOSE. A small malloc is served from the heap and touches
+ * no syscall at all, which would measure nothing and prove nothing; 96 KiB is what a per-frame buffer
+ * looks like and it takes the path under test. The raw mmap/munmap pair is measured separately and at
+ * a lower count, because it is the heavier of the two and 500 is already far more than the meter's
+ * 32-byte resolution needs at any plausible per-call cost. */
+void bodyMallocLarge() {
+  void* p = malloc(96*1024);
+  if(p!=nullptr) {
+    // Touched, so the allocator cannot hand back something it never had to back.
+    *static_cast<volatile char*>(p) = 1;
+    free(p);
+    }
+  }
+
+void bodyMmapPair() {
+  void* p = mmap(nullptr,64*1024,PROT_READ|PROT_WRITE,MAP_ANON|MAP_PRIVATE,-1,0);
+  if(p!=MAP_FAILED && p!=nullptr) {
+    *static_cast<volatile char*>(p) = 1;
+    munmap(p,64*1024);
+    }
+  }
+
 }
 
 void orbis::internalMemoryProbe() {
@@ -392,10 +427,23 @@ void orbis::internalMemoryProbe() {
   measure("pthread_mutex lock+unlock",&bodyMutexLock);
   measure("sceKernelUsleep(1)",      &bodyUsleep);
   measure("cond_timedwait EXPIRED",  &bodyCondTimedwaitExpired);
+  measure("malloc+free 96 KiB",      &bodyMallocLarge);
+  measureN("mmap+munmap 64 KiB",     &bodyMmapPair, 500);
 
-  orbis_log("internal memory probe: done. A line reading ~146 bytes each is the consumer the "
-            "graphics driver's syncobj timeout has been feeding; all lines at ~0 means the "
-            "allocation is inside libkernel on a path this overlay never calls.");
+  {
+    unsigned long long m=0,mc=0,mf=0,u=0,uc=0,uf=0;
+    orbis_mmap_counts(&m,&mc,&mf,&u,&uc,&uf);
+    orbis_log("internal memory probe: mmap traffic so far: %llu map(s) (%llu from a carve-out, %llu "
+              "fell through to libkernel), %llu unmap(s) (%llu carve-out, %llu fell through). The "
+              "fall-throughs are the ones that can cost internal memory.",
+              m,mc,mf,u,uc,uf);
+    }
+
+  orbis_log("internal memory probe: done. The frame ledger puts 9073 of 9280 bytes a frame above the "
+            "graphics driver, and bytes cannot leave this pool without a libkernel call - so if the "
+            "malloc or mmap line above is non-zero, that is the consumer and it is reached from every "
+            "allocation the frontend and zink make. If every line is 0, the call is one this overlay "
+            "does not make either, and the remaining route is instrumenting zink itself.");
   }
 
 

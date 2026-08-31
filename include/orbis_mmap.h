@@ -176,6 +176,16 @@
 // this project has already lost two console runs (conventions.md, "Defaults that every
 // deliberate target overrides"): the fix has to be what a build gets without asking.
 #define ORBIS_MMAP_DIRECT 1
+
+/* ⚠ HOW MUCH OF musl's ALLOCATION TRAFFIC REACHES libkernel. A request the carve-outs can serve costs
+   no syscall; one they cannot falls through to the platform's mmap/munmap, and those are the only
+   libkernel calls the frontend's and zink's allocations make. The frame ledger put 9073 of 9280 bytes
+   a frame in segments above the graphics driver where no counted call is made, and this path is the
+   one that was never counted. Any pointer may be null. */
+extern "C" void orbis_mmap_counts(unsigned long long* maps, unsigned long long* maps_carved,
+                                  unsigned long long* maps_fell, unsigned long long* unmaps,
+                                  unsigned long long* unmaps_carved, unsigned long long* unmaps_fell);
+
 #endif
 
 namespace orbis {

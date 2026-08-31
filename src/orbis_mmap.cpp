@@ -417,28 +417,81 @@ bool orbis::mmapDirectDescribe(const void* addr, MmapDirectSpan& out) {
 
 // ------------------------------------------------------------------ the interposition
 
+/* ⚠ THE PATH THE CENSUS NEVER COUNTED, AND THE ONLY ONE LEFT THAT CAN SPEND WHAT IS BEING SPENT.
+ *
+ * Measured on hardware 2026-08-31, with a ledger that reads libkernel's internal-memory meter at named
+ * points around the frame: 9073 of 9280 bytes a frame are spent in the two segments ABOVE the graphics
+ * driver - the frontend between frames, and the draw/translate/record path - while every segment inside
+ * the winsys costs 0-8 bytes per millisecond and every sce* call it makes has been weighed at zero in
+ * isolation. The bytes are real and they are not in any call that driver makes.
+ *
+ * ⚠ BUT BYTES CANNOT LEAVE libkernel's INTERNAL POOL WITHOUT A libkernel CALL, and Mesa's own malloc is
+ * not one: it reaches musl, and musl reaches THIS FILE. An allocation the carve-outs can serve costs no
+ * syscall at all; one they cannot falls through to the platform's mmap and munmap a few lines down, and
+ * those are libkernel entry points that nothing in this port has ever counted or weighed. That is
+ * exactly the shape of an allocation that lands in the frontend's window while belonging to us.
+ *
+ * ⚠ AND IT FITS THE ONE CONTROL THIS INVESTIGATION HAS. RetroArch's own Vulkan driver does not leak on
+ * this hardware while its glcore path does, and the difference established in its source is that the
+ * Vulkan driver draws through a buffer chain and descriptor pools that are grown once and reset per
+ * frame - no per-frame allocation - while zink recycles through general caches whose misses become
+ * malloc traffic. Same frame, same submits, same flips; different allocator behaviour.
+ *
+ * So the fall-throughs are counted, and orbis::internalMemoryProbe weighs a mmap/munmap pair and a
+ * malloc/free pair directly. Relaxed atomics: read once every few seconds by a report. */
+static unsigned long long mmapCalls, mmapCarved, mmapFell;
+static unsigned long long munmapCalls, munmapCarved, munmapFell;
+
+static inline void mmBump(unsigned long long* c) {
+  __atomic_fetch_add(c,1ull,__ATOMIC_RELAXED);
+  }
+
+extern "C" void orbis_mmap_counts(unsigned long long* maps, unsigned long long* maps_carved,
+                                  unsigned long long* maps_fell, unsigned long long* unmaps,
+                                  unsigned long long* unmaps_carved, unsigned long long* unmaps_fell) {
+  if(maps         !=nullptr) *maps         = __atomic_load_n(&mmapCalls,  __ATOMIC_RELAXED);
+  if(maps_carved  !=nullptr) *maps_carved  = __atomic_load_n(&mmapCarved, __ATOMIC_RELAXED);
+  if(maps_fell    !=nullptr) *maps_fell    = __atomic_load_n(&mmapFell,   __ATOMIC_RELAXED);
+  if(unmaps       !=nullptr) *unmaps       = __atomic_load_n(&munmapCalls,__ATOMIC_RELAXED);
+  if(unmaps_carved!=nullptr) *unmaps_carved= __atomic_load_n(&munmapCarved,__ATOMIC_RELAXED);
+  if(unmaps_fell  !=nullptr) *unmaps_fell  = __atomic_load_n(&munmapFell, __ATOMIC_RELAXED);
+  }
+
+
 extern "C" void* __mmap(void* addr, size_t len, int prot, int flags, int fd, off_t off) {
-  if(!isOwnedRequest(addr,prot,flags,fd,off))
+  mmBump(&mmapCalls);
+  /* ⚠ THE EARLY RETURN IS A FALL-THROUGH TOO, and counting only the one at the bottom would have
+     under-reported this path by however many mappings are not anonymous-owned requests - which is
+     every file mapping and every fixed one. */
+  if(!isOwnedRequest(addr,prot,flags,fd,off)) {
+    mmBump(&mmapFell);
     return mmap(addr,len,prot,flags,fd,off);
+    }
   banner(ORBIS_MMAP_DIRECT!=0);
 #if ORBIS_MMAP_DIRECT
+  mmBump(&mmapCarved);
   return mapOwned(len);
 #else
   // Byte for byte what musl's own __mmap did: mmap.lo is `jmp mmap` and nothing else.
+  mmBump(&mmapFell);
   return mmap(addr,len,prot,flags,fd,off);
 #endif
   }
 
 extern "C" int __munmap(void* addr, size_t len) {
+  mmBump(&munmapCalls);
     {
     Guard g;
     if(Carve* c = carveOfLocked(addr)) {
-      if(freeInLocked(*c,reinterpret_cast<uint8_t*>(addr),alignUp(uint64_t(len),Page)))
+      if(freeInLocked(*c,reinterpret_cast<uint8_t*>(addr),alignUp(uint64_t(len),Page))) {
+        mmBump(&munmapCarved);
         return 0;
+        }
       errno = EINVAL;
       return -1;
       }
     }
+  mmBump(&munmapFell);
   return munmap(addr,len);
   }
 
