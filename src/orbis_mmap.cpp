@@ -366,6 +366,55 @@ void orbis::mmapDirectReport(const char* where) {
 #endif
   }
 
+// ⚠ THE CARVE-OUT TABLE READ WITHOUT THE LOCK, DELIBERATELY, BECAUSE THE CALLER IS A SIGNAL
+// HANDLER. lockAcq() spins and then sceKernelUsleep()s; a thread that faults while holding this
+// lock - or while inside malloc, which holds it - would wait on itself forever, and a hang is a
+// strictly worse outcome than a missing line. The dump this feeds is the last thing printed
+// before the process idles, so it must not be able to stop.
+//
+// ⚠ AND THE UNLOCKED READ IS SOUND FOR A REASON, NOT BY HOPE. `carves` is only ever incremented,
+// and addCarveLocked writes a carve-out's va, size and first block BEFORE incrementing it, so a
+// racing reader either does not see a new carve-out or sees it fully formed. It can therefore
+// MISS the newest one - which prints nothing, the correct failure - and cannot invent one. The
+// block list is the weaker half: allocInLocked memmoves entries, so a concurrent split can be
+// observed torn. That costs a wrong block offset in a diagnostic line, never a wrong answer to
+// "which carve-out", and never a dereference: every value read is an integer.
+bool orbis::mmapDirectDescribe(const void* addr, MmapDirectSpan& out) {
+#if ORBIS_MMAP_DIRECT
+  const uint8_t* p = static_cast<const uint8_t*>(addr);
+  const uint32_t n = carves;
+  for(uint32_t i=0; i<n && i<MaxCarves; ++i) {
+    const Carve& c = carve[i];
+    if(c.va==nullptr || p<c.va || p>=c.va+c.size)
+      continue;
+    out.index      = i+1;
+    out.base       = c.va;
+    out.size       = c.size;
+    out.offset     = uint64_t(p-c.va);
+    out.blockFound = false;
+    out.blockUsed  = false;
+    out.blockOff   = 0;
+    out.blockSize  = 0;
+    const uint32_t bn = c.n;
+    for(uint32_t b=0; b<bn && b<MaxBlocks; ++b) {
+      const Block& blk = c.blk[b];
+      if(out.offset<blk.off || out.offset>=blk.off+blk.size)
+        continue;
+      out.blockFound = true;
+      out.blockUsed  = (blk.used!=0);
+      out.blockOff   = blk.off;
+      out.blockSize  = blk.size;
+      break;
+      }
+    return true;
+    }
+#else
+  (void)addr;
+#endif
+  (void)out;
+  return false;
+  }
+
 // ------------------------------------------------------------------ the interposition
 
 extern "C" void* __mmap(void* addr, size_t len, int prot, int flags, int fd, off_t off) {

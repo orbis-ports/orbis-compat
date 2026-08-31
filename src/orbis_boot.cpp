@@ -9,11 +9,16 @@
 
 #include <execinfo.h>
 #include <orbis_log.h>
+#include <orbis_mmap.h>
+
+#include <orbis/libkernel.h>
 
 #include <clocale>
 #include <cctype>
 #include <cerrno>
 #include <csignal>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -81,6 +86,121 @@ static const char* signalName(int sig) {
 // The console's own klog reported this crash as `App Crash reason=0x4` with
 // `[gpudump] This is NOT Gpu crash`, and OUR handler printed nothing at all - so the first
 // question is whether the handler runs, and the second is what it can say when it does.
+// ⚠ WHAT AN ADDRESS BELONGS TO, ASKED OF THE KERNEL INSTEAD OF INFERRED FROM A RANGE.
+//
+// This exists because of a specific two-day cost. swanstation faulted with rip 0x249303801, and
+// establishing only that it was OUTSIDE every loaded module took the kernel's own crash dump -
+// which this handler suppresses, because a process that survives its SIGSEGV is never dumped. The
+// band it landed in was then argued from carve-out banners printed minutes earlier in the log.
+// sceKernelVirtualQuery answers the whole question in one call, at the moment of the fault, and
+// distinguishes the two things that band contains and a banner cannot tell apart: musl's heap and
+// the GPU's buffers, both direct memory, both 0x2xxxxxxxx.
+//
+// ⚠ AND prot IS THE HALF THAT SETTLES ARGUMENTS. Whether rip's page is executable decides between
+// "the CPU ran code here" and "the fetch itself faulted", which are different bugs; that had to be
+// derived from the page-fault error code and a FreeBSD manual instead of read off the mapping.
+//
+// ⚠ AND THE THREE FIELDS THIS WANTS ARE CALLED unk01, unk02 AND unk04 IN THE SDK WE BUILD
+// AGAINST, WHICH IS WHY THEY ARE PINNED BELOW INSTEAD OF TRUSTED. A later revision of the same
+// header - the copy under src/oracles - names the identical struct
+//
+//     void* start_addr;  void* end_addr;  off_t offset;  int32_t prot;  int32_t mtype;
+//
+// with the same field order, the same types and the same five bitfields after them, and the one
+// field BOTH revisions spell the same way (`offset`) sits in the same slot in each. That is the
+// identification, and the static_asserts turn a future reorder into a build failure rather than
+// into a fault line that confidently names the wrong pointer - which this handler has already
+// printed once, and which cost more than the missing line ever would have.
+static_assert(offsetof(OrbisKernelVirtualQueryInfo,offset)==2*sizeof(void*),
+            "OrbisKernelVirtualQueryInfo no longer starts with two pointers - re-check which "
+            "fields are start_addr/end_addr/prot before printing them under those names");
+static_assert(sizeof(OrbisKernelVirtualQueryInfo)>=2*sizeof(void*)+sizeof(off_t)+2*sizeof(int32_t)+32,
+            "OrbisKernelVirtualQueryInfo is smaller than the fields this file reads out of it");
+static void describeAddress(const char* what, const void* p) {
+  OrbisKernelVirtualQueryInfo vq;
+  std::memset(&vq,0,sizeof(vq));
+  if(sceKernelVirtualQuery(p,0,&vq,sizeof(vq))!=0) {
+    // Silence would be wrong HERE and only here: an address the kernel will not describe is not
+    // mapped at all, and for rip that is itself the finding.
+    orbis_log_fatal("fatal: %s %p is in NO mapping the kernel will describe - not mapped",what,p);
+    return;
+    }
+  // CPU bits only. GPU_READ/GPU_WRITE live in the same word and say nothing about what the CPU
+  // was allowed to do at this address, which is the question a fault asks.
+  const int32_t prot = vq.unk04;          // prot
+  char rwx[4] = { char((prot&0x01)?'r':'-'), char((prot&0x02)?'w':'-'),
+                  char((prot&0x04)?'x':'-'), '\0' };
+  const char* pool = vq.isDirectMemory   ? "direct"
+                   : vq.isFlexibleMemory ? "flexible"
+                   : vq.isPooledMemory   ? "pooled"
+                   : vq.isStack          ? "stack"
+                   :                       "other";
+  // name[] comes from the kernel and is not guaranteed terminated.
+  char name[sizeof(vq.name)+1];
+  std::memcpy(name,vq.name,sizeof(vq.name));
+  name[sizeof(vq.name)] = '\0';
+  orbis_log_fatal("fatal: %s %p is in %p-%p prot 0x%x (%s) %s%s%s%s",
+                what,p,vq.unk01,vq.unk02,(unsigned)prot,rwx,pool,
+                vq.isCommitted ? ", committed" : ", NOT committed",
+                name[0] ? ", name " : "", name[0] ? name : "");
+
+  // And which carve-out, if it is one of ours. The kernel calls every one of them "direct"; only
+  // this file's own table knows which are musl's heap - and whether the block is still live.
+  orbis::MmapDirectSpan span;
+  if(orbis::mmapDirectDescribe(p,span)) {
+    if(span.blockFound)
+      orbis_log_fatal("fatal: %s is carve-out %u (base %p) +0x%llx, in a %s block of %llu KiB "
+                    "at +0x%llx%s",
+                    what,span.index,span.base,(unsigned long long)span.offset,
+                    span.blockUsed ? "LIVE" : "FREED",
+                    (unsigned long long)(span.blockSize/1024),
+                    (unsigned long long)span.blockOff,
+                    span.blockUsed ? "" : " - this is a USE AFTER FREE");
+    else
+      orbis_log_fatal("fatal: %s is carve-out %u (base %p) +0x%llx, in no block of it",
+                    what,span.index,span.base,(unsigned long long)span.offset);
+    }
+  }
+
+// ⚠ THE BYTES AT rip, BECAUSE "OUTSIDE EVERY MODULE" IS WHERE THE swanstation DIAGNOSIS STOPPED.
+// An address in anonymous memory has no symbol to look up, so the only way to learn whether it
+// holds real generated code or the debris of a freed object is to read it and disassemble it on
+// the build machine. Thirty-two bytes is enough for that and small enough to stay one line of
+// thought; llvm-mc --disassemble takes the output as it is printed.
+//
+// ⚠ AND IT IS READ ONLY WHERE THE KERNEL HAS ALREADY SAID IT IS READABLE. A second fault inside
+// this handler is fatal and silent - `reentered` is already set by the time it would happen - so
+// nothing here dereferences an address on the strength of it having been in a register. The
+// window is clamped into the mapping sceKernelVirtualQuery reports, which is also why a rip near
+// the start or end of a mapping prints fewer bytes rather than none.
+static void dumpCodeAt(const void* p) {
+  OrbisKernelVirtualQueryInfo vq;
+  std::memset(&vq,0,sizeof(vq));
+  if(sceKernelVirtualQuery(p,0,&vq,sizeof(vq))!=0)
+    return;
+  if(!vq.isCommitted || (vq.unk04&0x01)==0)   // prot
+    return;                              // not readable: say nothing rather than fault
+
+  const uint8_t* lo   = static_cast<const uint8_t*>(vq.unk01);   // start_addr
+  const uint8_t* hi   = static_cast<const uint8_t*>(vq.unk02);   // end_addr
+  const uint8_t* rip  = static_cast<const uint8_t*>(p);
+  if(rip<lo || rip>=hi)
+    return;
+  const uint8_t* from = (rip-lo >= 16) ? rip-16 : lo;
+  const uint8_t* to   = (hi-rip  > 16) ? rip+16 : hi;
+
+  for(const uint8_t* row=from; row<to; row+=16) {
+    char     line[3*16+1];
+    unsigned k = 0;
+    for(const uint8_t* b=row; b<to && b<row+16; ++b)
+      k += unsigned(std::snprintf(line+k,sizeof(line)-k,"%02x ",unsigned(*b)));
+    if(k>0)
+      line[k-1] = '\0';
+    orbis_log_fatal("fatal: code %p%s: %s",(const void*)row,
+                  (rip>=row && rip<row+16) ? " (rip in this row)" : "",line);
+    }
+  }
+
 static void ps4SignalAction(int sig, siginfo_t* info, void* uctx) {
   (void)uctx;
   // Not async-signal-safe, and deliberately so: a homebrew title that dies quietly is
@@ -208,6 +328,12 @@ static void ps4SignalAction(int sig, siginfo_t* info, void* uctx) {
                     (unsigned)(w[mc + MC_TRAPNO] & 0xffffffffu),
                     (unsigned long long)w[mc + MC_ERR],
                     (unsigned long long)w[mc + MC_RFLAGS], mc);
+      // ⚠ AND THEN WHAT THOSE TWO ADDRESSES ACTUALLY ARE. Everything above this line is a number;
+      // these lines are the ones that end an investigation instead of starting one.
+      describeAddress("rip", (const void*)(uintptr_t)w[mc + MC_RIP]);
+      if(w[mc + MC_ADDR] != 0)
+        describeAddress("addr", (const void*)(uintptr_t)w[mc + MC_ADDR]);
+      dumpCodeAt((const void*)(uintptr_t)w[mc + MC_RIP]);
       // ⚠ SUBTRACT THE MODULE BASE FROM rip TO GET A FUNCTION. The kernel writes no dump once
       // this handler survives the signal, so nothing else prints where the module landed -
       // libretro-common/dynamic/dylib.c logs each core's retro_run address at load for exactly

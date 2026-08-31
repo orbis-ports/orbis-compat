@@ -185,4 +185,30 @@ namespace orbis {
 // after malloc has started returning null.
 void mmapDirectReport(const char* where);
 
+// What a single address is, in this file's terms. Filled by mmapDirectDescribe below.
+//
+// `index` numbers the carve-out the way the "carve-out N taken" banner does, so a fault
+// line and a startup line can be read against each other. The block fields describe the
+// suballocated block the address falls in - and `blockUsed` is the field worth crossing a
+// room for: an address inside a FREE block is a use-after-free, stated rather than
+// inferred, which is otherwise one of the hardest things on this platform to prove.
+struct MmapDirectSpan {
+  unsigned           index;      // 1-based, as the banner prints it
+  const void*        base;       // carve-out base
+  unsigned long long size;       // carve-out size in bytes
+  unsigned long long offset;     // addr - base
+  bool               blockFound;
+  bool               blockUsed;  // false == the address is inside memory that was FREED
+  unsigned long long blockOff;   // block start, as an offset into the carve-out
+  unsigned long long blockSize;
+  };
+
+// True if `addr` falls inside a carve-out this file handed out, with `out` filled in.
+//
+// ⚠ SAFE TO CALL FROM A SIGNAL HANDLER, AND THAT IS THE ONLY REASON IT EXISTS SEPARATELY
+// FROM mmapDirectReport. It takes no lock, allocates nothing, and calls nothing that
+// might: see the comment on the definition for why reading the table unlocked is sound
+// and what it can and cannot get wrong.
+bool mmapDirectDescribe(const void* addr, MmapDirectSpan& out);
+
 }
