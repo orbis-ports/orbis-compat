@@ -119,6 +119,11 @@ void load_once() {
   g_loaded = true;
   load_file("/data/tempest-env.txt");
   load_file("/data/retroarch-env.txt");
+  // ⚠ THE DESKTOP-GL EBOOT HAS A FILE OF ITS OWN, and this list not knowing about it was worth a
+  // wasted console run: the frontend applies it (platform_orbis.c) but a module reading through
+  // orbis_env_get would have missed it entirely. Last, so it overrides the shared file, which is the
+  // same order the frontend applies them in.
+  load_file("/data/retroarch-glcore-env.txt");
   }
 
 }  // namespace

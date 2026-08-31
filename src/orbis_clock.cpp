@@ -92,6 +92,27 @@ bool unknownIdSeen = false;
 // Overrides libkernel.so's export for every reference inside this executable - the same
 // mechanism orbis_stat.cpp uses against `stat` and orbis_mmap.cpp against `mmap`. libc++ is
 // linked statically here, so its steady_clock and high_resolution_clock resolve to this.
+/* ⚠ COUNTED, BECAUSE IT IS THE LAST THING LEFT ON A PATH WHERE EVERYTHING ELSE HAS BEEN CLEARED.
+ *
+ * The graphics driver loses ~146 bytes of libkernel's internal memory for every syncobj wait that
+ * expires, ~81 times a frame. Measured and excluded so far: every sceKernel and sceVideoOut call the
+ * driver makes (submits, flips, mprotect, direct memory, usleep - all flat across leaking and
+ * non-leaking windows), the log sink (budgeted to 8 lines, loss unchanged), and this overlay's futex
+ * shim (0 cond-timedwaits and 0 timeouts in every window). What remains on the failing path is one
+ * mutex round trip and TWO CALLS TO THIS FUNCTION - orbis_wait_begin reads the clock, orbis_wait_continue
+ * reads it again - and 146/2 is 73, which is the size of a small fixed record.
+ *
+ * That is a coincidence until it is measured, which is what these counters are for: if the leak is
+ * here, the monotonic count runs at about twice the driver's expiring-wait count and the bytes divide
+ * evenly by it. Relaxed atomics on a path this hot are two instructions and no ordering. */
+static unsigned long long clkMonotonic;
+static unsigned long long clkRealtime;
+
+extern "C" void orbis_clock_counts(unsigned long long* monotonic, unsigned long long* realtime) {
+  if(monotonic!=nullptr) *monotonic = __atomic_load_n(&clkMonotonic,__ATOMIC_RELAXED);
+  if(realtime !=nullptr) *realtime  = __atomic_load_n(&clkRealtime, __ATOMIC_RELAXED);
+  }
+
 extern "C" int clock_gettime(clockid_t id, struct timespec* ts) {
   if(ts==nullptr) {
     errno = EFAULT;
@@ -102,9 +123,11 @@ extern "C" int clock_gettime(clockid_t id, struct timespec* ts) {
     case CLOCK_MONOTONIC_RAW:
     case CLOCK_MONOTONIC_COARSE:
     case CLOCK_BOOTTIME:
+      __atomic_fetch_add(&clkMonotonic,1ull,__ATOMIC_RELAXED);
       return monotonicNow(ts);
     case CLOCK_REALTIME:
     case CLOCK_REALTIME_COARSE:
+      __atomic_fetch_add(&clkRealtime,1ull,__ATOMIC_RELAXED);
       return realtimeNow(ts);
     default:
       // The CPU-time clocks. Nothing here asks for them, and EINVAL would fail a caller for a

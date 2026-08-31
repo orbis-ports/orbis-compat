@@ -48,4 +48,11 @@ void clockProbe();
 
 } // namespace orbis
 
+/* How many times clock_gettime has answered each family. See the block in src/orbis_clock.cpp: this
+   is the last uncleared call on the graphics driver's leaking path, and these two numbers are how the
+   driver's report can divide bytes lost by clock reads instead of by a guess. Not in a namespace -
+   the consumer is C. */
+extern "C" void orbis_clock_counts(unsigned long long* monotonic, unsigned long long* realtime);
+
+
 #endif

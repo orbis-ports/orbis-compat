@@ -397,3 +397,19 @@ void orbis::internalMemoryProbe() {
             "graphics driver's syncobj timeout has been feeding; all lines at ~0 means the "
             "allocation is inside libkernel on a path this overlay never calls.");
   }
+
+
+/* ⚠ A C ENTRY POINT, BECAUSE THE ONE PLACE THAT CAN CALL THIS IS C AND THE PROBE WAS DEAD WITHOUT IT.
+ *
+ * The first version of this probe was hung on orbis::memCensusBaseline(), on my claim that it "rides
+ * at boot, so no frontend change is needed". memCensusBaseline() is defined in this file and CALLED
+ * FROM NOWHERE - not by this overlay, not by the frontend, not by anything in ps4/. The probe was
+ * shipped, the knob was set correctly, and it printed nothing, because it was never reached.
+ *
+ * ⚠ AND THE CALL SITE IS NOT FREE TO CHOOSE. The knob lives in an env FILE, and on this platform
+ * setenv() in one image is invisible to another - the frontend parses those files and setenv()s them
+ * at frontend/drivers/platform_orbis.c:472-484. Anything that reads getenv before that line sees an
+ * empty environment, so a boot-time constructor here would be just as silent as dead code was. */
+extern "C" void orbis_internal_memory_probe(void) {
+  orbis::internalMemoryProbe();
+  }
