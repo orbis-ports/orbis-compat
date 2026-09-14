@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <cstring>
 #include <cstddef>
+#include <cstdint>
 
 // The two entry points that libkernel.so exports AND unemups4 binds. Declared here with
 // a void* buffer rather than through <orbis/libkernel.h>, whose OrbisKernelStat is a
@@ -161,8 +162,14 @@ extern "C" int stat(const char* path, struct stat* out) {
   const char*   apath     = orbis::anchorPath(path,abuf,sizeof(abuf));
   unsigned char raw[kScratch] = {};
   const int rc = sceKernelStat(apath,raw);
-  if(rc!=0)
-    return rc;
+  // ⚠ AN SCE CALL BEHIND A POSIX NAME: failure is 0x8002_0000 | errno, NOT -1 with errno set.
+  // Passed through, libc++'s posix_stat (`== -1`) took a missing path for success and read an
+  // unfilled struct - Panda3DS's create_directories then threw "File exists" for a path that did
+  // not exist. The low byte is the FreeBSD errno, which is this SDK's numbering too.
+  if(rc!=0) {
+    errno = (static_cast<uint32_t>(rc)>>16)==0x8002 ? (rc & 0xFFFF) : EIO;
+    return -1;
+    }
   translate(raw,out);
   return 0;
   }
