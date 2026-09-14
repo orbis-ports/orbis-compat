@@ -211,22 +211,26 @@ extern "C" int open64(const char* path, int flags, ...) __attribute__((alias("op
 // writes to a temporary and renames it would each hit this.
 //
 // These delegate to sceKernelUnlink / sceKernelRename rather than to a `_unlink` import, because
-// musl reaches those through a raw syscall and there is no lower symbol to hand off to. The
-// consequence is stated rather than hidden: the SCE calls report an SCE error code instead of
-// setting errno, so errno is set here from a nonzero return - imprecisely, but a caller that
-// checks only success/failure (which both of musl's do) cannot tell, and the alternative is a
-// call that keeps failing for no reason anyone can see.
+// musl reaches those through a raw syscall and there is no lower symbol to hand off to. The SCE
+// calls report 0x8002_0000 | errno instead of setting errno, so errno is decoded from that.
+//
+// ⚠ IT WAS EIO FOR EVERY FAILURE, AND THE ERRNO IS WHAT A CALLER BRANCHES ON. musl's remove()
+// is unlink, then rmdir only if errno is EISDIR - so with EIO no directory could ever be removed,
+// and libc++'s remove_all threw "I/O error" on an empty SaveData directory (Panda3DS formatting
+// a save archive).
 extern "C" int32_t sceKernelUnlink(const char*);
 extern "C" int32_t sceKernelRename(const char* from, const char* to);
+extern "C" int32_t sceKernelRmdir(const char*);
+
+static int sceFailure(int32_t rc) {
+  errno = (static_cast<uint32_t>(rc)>>16)==0x8002 ? (rc & 0xFFFF) : EIO;
+  return -1;
+  }
 
 extern "C" int unlink(const char* path) {
   char        buf[512] = {};
   const int32_t rc = sceKernelUnlink(orbis::anchorPath(path,buf,sizeof(buf)));
-  if(rc!=0) {
-    errno = EIO;
-    return -1;
-    }
-  return 0;
+  return rc!=0 ? sceFailure(rc) : 0;
   }
 
 extern "C" int rename(const char* from, const char* to) {
@@ -237,9 +241,19 @@ extern "C" int rename(const char* from, const char* to) {
   const char* f = orbis::anchorPath(from,fbuf,sizeof(fbuf));
   const char* t = orbis::anchorPath(to,tbuf,sizeof(tbuf));
   const int32_t rc = sceKernelRename(f,t);
-  if(rc!=0) {
-    errno = EIO;
+  return rc!=0 ? sceFailure(rc) : 0;
+  }
+
+// ⚠ DECIDED BY stat, NOT BY unlink's errno. musl asks for EISDIR, which is Linux's answer to
+// unlink(directory); a FreeBSD-derived kernel answers EPERM, so even a correct errno would never
+// reach rmdir. Interposed here so libc.a's remove.lo is never extracted.
+extern "C" int remove(const char* path) {
+  struct stat st;
+  if(stat(path,&st)!=0)
     return -1;
-    }
-  return 0;
+  if(!S_ISDIR(st.st_mode))
+    return unlink(path);
+  char          buf[512] = {};
+  const int32_t rc       = sceKernelRmdir(orbis::anchorPath(path,buf,sizeof(buf)));
+  return rc!=0 ? sceFailure(rc) : 0;
   }
