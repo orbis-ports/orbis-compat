@@ -5,6 +5,7 @@
 #     TITLE         "Tempest Hello"
 #     [VERSION      01.00]
 #     [CONTENT_LABEL TEMPESTHELLO]       # <=16 chars, [A-Z0-9], padded with zeros
+#     [ICON         icon0.png]           # 512x512 PNG; default: a tile generated from TITLE_ID
 #     [EXTRA_FILES  <src>:<targ_path> ...])
 #
 # Appends POST_BUILD steps that turn the target's eboot.bin (produced by
@@ -28,7 +29,7 @@ function(ps4_create_pkg target)
     return()
   endif()
 
-  cmake_parse_arguments(ARG "" "TITLE_ID;TITLE;VERSION;CONTENT_LABEL" "EXTRA_FILES" ${ARGN})
+  cmake_parse_arguments(ARG "" "TITLE_ID;TITLE;VERSION;CONTENT_LABEL;ICON" "EXTRA_FILES" ${ARGN})
   if(NOT ARG_TITLE_ID)
     message(FATAL_ERROR "ps4_create_pkg(${target}): TITLE_ID is required")
   endif()
@@ -50,11 +51,21 @@ function(ps4_create_pkg target)
     return()
   endif()
 
-  # icon0.png depends only on TITLE_ID, so generate it once at configure time
+  # A title's own icon wins. It must already be what the console wants - 512x512 PNG - since nothing
+  # here converts it. LINK_DEPENDS because the package is a POST_BUILD step: without it a changed icon
+  # would wait for the next code change to reach a .pkg.
+  #
+  # Otherwise icon0.png depends only on TITLE_ID, so it is generated once at configure time
   # rather than re-running the pure-python encoder on every build.
   set(_icon "")
   find_program(PS4_PYTHON3 NAMES python3 python)
-  if(PS4_PYTHON3)
+  if(ARG_ICON)
+    get_filename_component(_icon "${ARG_ICON}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(NOT EXISTS "${_icon}")
+      message(FATAL_ERROR "ps4_create_pkg(${target}): ICON ${_icon} does not exist")
+    endif()
+    set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${_icon}")
+  elseif(PS4_PYTHON3)
     set(_icon "${CMAKE_CURRENT_BINARY_DIR}/pkg-assets/icon0.png")
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/pkg-assets")
     execute_process(
