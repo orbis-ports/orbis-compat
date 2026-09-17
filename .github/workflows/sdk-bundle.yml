@@ -97,8 +97,13 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -y -o Acquire::Retries=3
-          sudo apt-get install -y -o Acquire::Retries=3 clang lld llvm cmake
-          for t in clang clang++ ld.lld llvm-ar llvm-ranlib llvm-nm cmake; do
+          # ⚠ glslang-tools IS FOR THE PORT, NOT FOR THE BUNDLE, and leaving it out failed the
+          # gate's last stage on "CMake Error at shader/CMakeLists.txt:25" - glslangValidator
+          # required. Nothing in orbis-compat needs it; OpenGothic compiles its shaders at build
+          # time and the gate builds OpenGothic. A port the gate is pointed at can need host tools
+          # of its own, and this is the list where they go.
+          sudo apt-get install -y -o Acquire::Retries=3 clang lld llvm cmake glslang-tools
+          for t in clang clang++ ld.lld llvm-ar llvm-ranlib llvm-nm cmake glslangValidator; do
             command -v "$t" >/dev/null || { echo "!! $t still missing after install" >&2; exit 1; }
           done
           clang --version | head -1
