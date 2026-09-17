@@ -125,15 +125,26 @@ echo "== ${OUT}/liborbis-compat.a"
 # chooses the alignment and the SDK's crt preserves it through two jmps. test/crt_abi.sh checks the
 # artifact for it rather than trusting this line.
 CRT_OUT="${OUT}/crt"
-CRT_BASE=(--target=x86_64-pc-freebsd12-elf -fPIC -O2 -fomit-frame-pointer -fno-stack-protector
+# ⚠ -isysroot AND -isystem, AND LEAVING THEM OUT BUILT FINE ON macOS AND FAILED ON LINUX. These
+# files include <stddef.h> and <stdint.h>; with no sysroot clang answers them from wherever it
+# likes, and on a glibc host that is /usr/include:
+#
+#     /usr/include/stdint.h:26:10: fatal error: 'bits/libc-header-start.h' file not found
+#
+# On macOS clang's own resource headers satisfied both, so every local run passed and CI was the
+# first thing to see it. Same flags as BASE above, for the same reason BASE has them - a crt
+# compiled against the host's libc headers is not a crt for this console.
+CRT_BASE=(--target=x86_64-pc-freebsd12-elf -isysroot "${TC}"
+          -isystem "${ROOT}/include" -isystem "${TC}/include"
+          -fPIC -O2 -fomit-frame-pointer -fno-stack-protector
           -Wall -Wextra -std=c11)
 mkdir -p "${CRT_OUT}"
 clang "${CRT_BASE[@]}" -ffunction-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
       -c "${ROOT}/crt/orbis_crt1.c"   -o "${CRT_OUT}/crt1.o"
 clang "${CRT_BASE[@]}" -funwind-tables \
       -c "${ROOT}/crt/orbis_crtlib.c" -o "${CRT_OUT}/crtlib.o"
-clang --target=x86_64-pc-freebsd12-elf -c "${ROOT}/crt/orbis_crti.S" -o "${CRT_OUT}/crti.o"
-clang --target=x86_64-pc-freebsd12-elf -c "${ROOT}/crt/orbis_crtn.S" -o "${CRT_OUT}/crtn.o"
+clang --target=x86_64-pc-freebsd12-elf -isysroot "${TC}" -c "${ROOT}/crt/orbis_crti.S" -o "${CRT_OUT}/crti.o"
+clang --target=x86_64-pc-freebsd12-elf -isysroot "${TC}" -c "${ROOT}/crt/orbis_crtn.S" -o "${CRT_OUT}/crtn.o"
 echo "== ${CRT_OUT}/{crt1,crtlib,crti,crtn}.o"
 
 [[ ${CHECK} -eq 1 ]] || exit 0
