@@ -9,7 +9,35 @@
 # cause: ld.lld emits a segment the PS4 loader will not accept, and the loader's diagnosis names the
 # segment rather than the reason. Anyone reading either fix should know the other exists.
 #
-# SPDX-License-Identifier: MIT
+# ⚠ THIS FILE IS NOT OURS TO LICENCE, AND IT SPENT ITS WHOLE LIFE HERE CLAIMING OTHERWISE. It is a
+# derivative work of the SDK's file, not an independent script that happens to resemble it. What was
+# checked, against the tree on disk and the upstream repository, rather than assumed:
+#
+#   upstream file      link.x, at the root of the OpenOrbis PS4 Toolchain.
+#   upstream release   v0.5.4, asset toolchain-llvm-18.tar.gz. ⚠ The extracted tree carries no
+#                      version string of its own - its CHANGELOG.md stops at v0.5.2 - so the release
+#                      asset is the identification, and anyone re-checking this has to start there.
+#   upstream licence   GPL-3.0. The toolchain repository's LICENSE is the GPLv3 text and its README
+#                      says "This project is licensed under the GPLv3 license". Nothing in that
+#                      repository says "or any later version" as a grant, hence GPL-3.0-only and not
+#                      GPL-3.0-or-later; nothing in it grants a linking exception either.
+#   what changed here  TWO substantive lines, both in the .tls rule: *(.tdata) became
+#                      *(.tdata .tdata.*) and *(.tbss) became *(.tbss .tbss.*). `diff` against the
+#                      SDK's copy is 33 lines; the other 31 are this comment and the one below it.
+#
+# A derivative of a GPL-3.0 file cannot be relicensed by the person deriving it, so the
+# `SPDX-License-Identifier: MIT` this file used to carry was WRONG - not a debatable reading, just
+# wrong. The line below is the corrected one. Every other file in this repository is still MIT
+# (`include/sys/ioccom.h` excepted; its macros follow FreeBSD's, BSD-3-Clause); this one is not.
+#
+# ⚠ A LINKER SCRIPT IS A BUILD-TIME INPUT, BUT THIS ONE ALSO EMITS BYTES INTO THE OUTPUT. The four
+# QUAD() values at the top of .text below are the ASCII of "/libexec/ld-elf.so.1", and they land in
+# every eboot.bin linked through this script - so this is not purely a tool that ran and left. That
+# is recorded as a fact a reader needs, not as a conclusion about what any built binary's licence
+# then is; nobody here has established that, and this comment does not pretend to.
+#
+# Copyright (C) the OpenOrbis contributors; modifications © 2026 Mikołaj Mikołajczyk
+# SPDX-License-Identifier: GPL-3.0-only
 SECTIONS
 {
 	# Combine text, rodata, and eh_frame stuff

@@ -5,9 +5,14 @@
    These are the plain FreeBSD definitions; nothing here calls an ioctl on this platform, the macros
    only have to expand to the same numbers the ABI headers were written against.
 
-   ⚠ THIS IS THE ONE FILE HERE THAT IS NOT ORIGINAL. The macros below follow FreeBSD's
-   sys/sys/ioccom.h, which is BSD-3-Clause; they encode an ABI and cannot be written differently and
-   still work. The rest of this repository is MIT. */
+   ⚠ THIS FILE IS NOT ORIGINAL. The macros below follow FreeBSD's sys/sys/ioccom.h, which is
+   BSD-3-Clause; they encode an ABI and cannot be written differently and still work.
+
+   ⚠ AND IT IS NO LONGER THE ONLY ONE, which is what this comment used to claim. cmake/orbis-tls.ld
+   is the OpenOrbis SDK's own link.x with two patterns added, and the SDK is GPL-3.0-only with no
+   linking exception - so that file is GPL-3.0-only, not MIT, and carried an MIT label until it was
+   corrected. Those two are the whole of the exception list; everything else here is MIT. LICENSE
+   names both. */
 #pragma once
 #define IOCPARM_SHIFT   13
 #define IOCPARM_MASK    ((1 << IOCPARM_SHIFT) - 1)
