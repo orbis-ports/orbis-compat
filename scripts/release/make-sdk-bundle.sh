@@ -149,9 +149,21 @@ if [ "$MESA_BUILT_AGAINST" != "$COMPAT_SHA" ]; then
   PAIR="MISMATCH"
   warn "Mesa was built against orbis-compat ${MESA_BUILT_AGAINST:0:12}"
   warn "this bundle would ship orbis-compat   ${COMPAT_SHA:0:12}"
-  if git -C "$COMPAT" rev-parse --verify "$MESA_BUILT_AGAINST" >/dev/null 2>&1; then
-    warn "between them: $(git -C "$COMPAT" rev-list --count "$MESA_BUILT_AGAINST..$COMPAT_SHA" 2>/dev/null || echo '?') commits, \
-$(git -C "$COMPAT" diff --shortstat "$MESA_BUILT_AGAINST..$COMPAT_SHA" -- include/ 2>/dev/null | tr -d '\n') under include/"
+  # ⚠ rev-parse --verify IS NOT ENOUGH, AND THIS PRINTED BLANKS THE FIRST TIME IT FIRED IN CI:
+  #
+  #     !! between them: ? commits,  under include/
+  #
+  # A CI checkout is shallow. The old commit OBJECT can resolve while its ancestry is absent, so
+  # --verify passes and rev-list has no range to walk. The drift figure is the most useful line
+  # this warning has, and it is needed exactly when the warning fires - so compute it first and
+  # say plainly when it cannot be computed, rather than printing a question mark and an empty gap.
+  _n="$(git -C "$COMPAT" rev-list --count "$MESA_BUILT_AGAINST..$COMPAT_SHA" 2>/dev/null || true)"
+  if [ -n "$_n" ]; then
+    _d="$(git -C "$COMPAT" diff --shortstat "$MESA_BUILT_AGAINST..$COMPAT_SHA" -- include/ 2>/dev/null | tr -d '\n')"
+    warn "between them: $_n commits,${_d:- no change} under include/"
+  else
+    warn "between them: cannot say - ${MESA_BUILT_AGAINST:0:12} is not reachable in this checkout"
+    warn "  (a shallow clone resolves the object but not its ancestry; git fetch --unshallow to see)"
   fi
   [ "$ALLOW_MISMATCH" -eq 1 ] || die \
 "REFUSED. Mesa compiled against one set of headers and would link against a different
