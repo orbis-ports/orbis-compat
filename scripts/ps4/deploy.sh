@@ -23,6 +23,11 @@
 # SPDX-License-Identifier: MIT
 set -euo pipefail
 
+# Portable file size. macOS stat has no -c: `stat: illegal option -- c`, and the message goes to
+# stderr while the substitution yields the empty string, so the line still prints and reads as a
+# successful step with a blank number. GNU first, BSD second; both are exact.
+orbis_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
+
 PKG=""; NAME=""; HOST="${ORBIS_CONSOLE:-192.168.100.2}"; PORT="${ORBIS_FTP_PORT:-2121}"
 ALSO=()
 
@@ -74,7 +79,7 @@ lftp_do() {
 
 put() {
   local local_f="$1" remote_f="$2"
-  echo "== $(stat -c %s "${local_f}") B  ${local_f}"
+  echo "== $(orbis_size "${local_f}") B  ${local_f}"
   echo "   -> ${remote_f}"
   lftp_do "put \"${local_f}\" -o \"${remote_f}\"" >/dev/null
 }
@@ -101,7 +106,7 @@ remote_size() {
 
 verify_size() {
   local local_f="$1" remote_f="$2" want got
-  want="$(stat -c %s "${local_f}")"
+  want="$(orbis_size "${local_f}")"
   got="$(remote_size "${remote_f}")" || die \
     "could not read a size for ${remote_f} from the console - it is missing, or the listing format changed"
   [[ -n "${got}" ]] || die "${remote_f} is not on the console after the upload"
@@ -130,7 +135,7 @@ for spec in "${ALSO[@]}"; do
   put "$l" "$r"
   # Small enough to compare properly. Run configuration is exactly the kind of file where one wrong
   # line costs a console trip, so it gets the strong check rather than the cheap one.
-  if [[ "$(stat -c %s "$l")" -lt 1048576 ]]; then verify_bytes "$l" "$r"; else verify_size "$l" "$r"; fi
+  if [[ "$(orbis_size "$l")" -lt 1048576 ]]; then verify_bytes "$l" "$r"; else verify_size "$l" "$r"; fi
 done
 
 if [[ -n "${PKG}" ]]; then

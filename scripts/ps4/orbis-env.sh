@@ -1,4 +1,9 @@
 # Shared prologue for every PS4 build entry point in orbis-ports. Source it; do not run it.
+
+# Portable file size. macOS stat has no -c: `stat: illegal option -- c`, and the message goes to
+# stderr while the substitution yields the empty string, so the line still prints and reads as a
+# successful step with a blank number. GNU first, BSD second; both are exact.
+orbis_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
 #
 #   . "${ORBIS_COMPAT}/scripts/ps4/orbis-env.sh"
 #
@@ -59,7 +64,11 @@ export OO_PS4_TOOLCHAIN
 ORBIS_WORK="${ORBIS_WORK:-${XDG_CACHE_HOME:-${HOME}/.cache}/orbis-ports}"
 export ORBIS_WORK
 
-ORBIS_JOBS="${ORBIS_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+# ⚠ THE FALLBACK USED TO BE A BARE 4, WHICH IS NOT A FAILURE BUT IS A WRONG ANSWER. macOS has
+# no nproc, so every build driven through this file quietly used four jobs on an 18-core
+# machine. getconf is POSIX and answers on both Linux and macOS; 4 is now the last resort
+# rather than the macOS answer.
+ORBIS_JOBS="${ORBIS_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 export ORBIS_JOBS
 
 # ---------------------------------------------------------------- the driver
@@ -89,7 +98,7 @@ orbis_announce_driver() {
     exit 1
   }
   echo "== driver: ${ORBIS_RADV_ARCHIVE}"
-  echo "==         built $(date -r "${ORBIS_RADV_ARCHIVE}" '+%Y-%m-%d %H:%M:%S'), $(stat -c %s "${ORBIS_RADV_ARCHIVE}") bytes"
+  echo "==         built $(date -r "${ORBIS_RADV_ARCHIVE}" '+%Y-%m-%d %H:%M:%S'), $(orbis_size "${ORBIS_RADV_ARCHIVE}") bytes"
 }
 
 orbis_die()  { echo "!! $*" >&2; exit 1; }
