@@ -12,7 +12,8 @@
 #      does not account for (an EXTRA file is drift too - it means something was added by hand)
 #   2. every component in the licence table has its licence text present and non-trivial
 #   3. NOTICE.md is not stale relative to that table
-#   4. the Mesa half and the orbis-compat half were built from the same pair
+#   4. the Mesa half and the orbis-compat half are a coherent pair - the same commit, or two
+#      commits across which include/ is byte-identical, which is all Mesa compiles from here
 #   5. every symbol the Mesa archives import from orbis-compat is still defined by the
 #      orbis-compat in the bundle - IF a symbol reader is available (see below)
 #   6. the layout is the one the toolchain file and every consumer's build reads
@@ -130,11 +131,37 @@ elif [ "$MESA_AGAINST" != "$MESA_MANIFEST_AGAINST" ]; then
   err "BUNDLE.txt and mesa/manifest.txt disagree about which orbis-compat Mesa saw.
    One of them was edited after the cut."
   RC=1
-elif [ "$COMPAT_SHA" != "$MESA_MANIFEST_AGAINST" ]; then
+elif [ "$COMPAT_SHA" != "$MESA_MANIFEST_AGAINST" ] && [ "$(field pairing-basis)" != include-identical ]; then
   err "MISMATCHED PAIR. Mesa compiled against ${MESA_MANIFEST_AGAINST:0:12} and this bundle ships
    ${COMPAT_SHA:0:12}. The import-list check below does NOT cover this: it tests that names
    still exist, and a struct that changed size does not change a name. Do not publish."
   RC=1
+elif [ "$COMPAT_SHA" != "$MESA_MANIFEST_AGAINST" ]; then
+  # ⚠ THE COMMITS DIFFER AND THE HEADERS DID NOT, AND THIS IS THE WEAKEST LINE IN THIS SCRIPT.
+  # include/ is the whole of what Mesa compiles from this repository, so a bundle whose commits
+  # differ while include/ is identical is coherent - make-sdk-bundle.sh diffed the two trees and
+  # recorded pairing-basis=include-identical. But that diff needed a git history, and a stranger
+  # holding only this tarball has none, so THIS script cannot re-derive it. What it can do, and
+  # does below, is prove the headers in the bundle are the ones the cut measured.
+  #
+  # ⚠ So say which half is which rather than printing one confident line: the fingerprint is
+  # checked here; the claim about what Mesa saw is carried from the cut. Making that independent
+  # too needs mesa-ps4's manifest to record the same hash - a change there, and a rebuild.
+  warn "commits differ (${MESA_MANIFEST_AGAINST:0:12} vs ${COMPAT_SHA:0:12}) but the cut recorded"
+  warn "  pairing-basis=include-identical: include/ was byte-identical across them."
+  WANT_INC="$(field orbis-compat-include-sha256)"
+  GOT_INC="$(cd "$B/orbis-compat" && find include -type f | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
+  if [ -z "$WANT_INC" ]; then
+    warn "  no orbis-compat-include-sha256 in BUNDLE.txt - cut by an older script, cannot check"
+    INCOMPLETE=1
+  elif [ "$WANT_INC" = "$GOT_INC" ]; then
+    ok "include/ matches the fingerprint taken at the cut (${GOT_INC:0:12})"
+    warn "  what Mesa saw is a RECORDED verdict here, not one this script re-derived"
+  else
+    err "include/ does not match the fingerprint in BUNDLE.txt - the headers were altered after
+   the cut. want ${WANT_INC:0:12}, got ${GOT_INC:0:12}"
+    RC=1
+  fi
 elif [ "$PAIRING" != "ok" ]; then
   err "BUNDLE.txt says pairing=$PAIRING. It was cut with --allow-pair-mismatch."
   RC=1

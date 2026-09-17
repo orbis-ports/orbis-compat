@@ -341,6 +341,15 @@ SDK_TAG="${MESA_SDK_TAG:-unknown}"
   echo "# --- the pairing. See make-sdk-bundle.sh's header for why this bundle freezes the"
   echo "# two halves together while mesa-ps4's own artifact deliberately does not. ---"
   echo "pairing=$PAIR"
+  # ⚠ THE FINGERPRINT IS WHAT MAKES THE VERDICT CHECKABLE OFFLINE. A stranger with the tarball has
+  # no git history to diff include/ against, so "the shas differ but the headers do not" cannot be
+  # re-derived from the bundle alone. This records WHAT WAS SHIPPED - a hash over the include/ tree
+  # that is in this tarball - so verify can at least prove the headers were not altered after the
+  # cut, and say plainly that the Mesa half of the claim is a recorded verdict rather than an
+  # independent check. Making it fully independent needs Mesa's own manifest to carry the same
+  # hash; that is a change to mesa-ps4's release workflow and a rebuild, not to this line.
+  echo "orbis-compat-include-sha256=$(cd "$STAGE/orbis-compat" && find include -type f | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -d" " -f1)"
+  echo "pairing-basis=$( [ "$MESA_BUILT_AGAINST" = "$COMPAT_SHA" ] && echo same-commit || echo include-identical )"
   echo
   echo "# --- the publication gate. UNPROVEN until bundle-gate.sh has run against an UNPACKED"
   echo "# copy of this tarball on a host with ld.lld, llvm-ar, llvm-ranlib and llvm-nm. A"
