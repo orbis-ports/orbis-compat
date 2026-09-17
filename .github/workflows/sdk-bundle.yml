@@ -108,6 +108,36 @@ jobs:
           done
           clang --version | head -1
 
+      # ⚠ PkgTool.Core NEEDS OpenSSL 1.1 AND THE RUNNER HAS OPENSSL 3. It is an old self-contained
+      # .NET build whose crypto shim dlopen()s libssl.so.1.1 by soname; make-pkg.sh reads
+      # PS4_PKGTOOL_OPENSSL_LIB first and only then probes /nix/store, which a runner does not have.
+      # Without it the gate's port builds and links 100%, create-fself produces an eboot, and THEN
+      # packaging dies - "No usable version of libssl was found", core dumped, and make deletes the
+      # freshly linked .elf on its way out.
+      #
+      # ⚠ THIS IS THE THIRD COPY OF THIS STEP. OpenGothic's ps4.yml has it and says "(Same step as
+      # RetroArch.)"; RetroArch has it; now the bundle does. Three repositories carrying the same
+      # twenty lines is exactly the drift this bundle exists to remove, reappearing in the bundle's
+      # own workflow. It is copied rather than solved because a composite action lives in one
+      # repository and these are three - the honest fix is for make-pkg.sh to do the probe itself.
+      - name: OpenSSL 1.1 for PkgTool.Core
+        run: |
+          set -euo pipefail
+          lib="${RUNNER_TEMP}/openssl11/lib"
+          if [ ! -e "$lib/libssl.so.1.1" ]; then
+            tmp="$(mktemp -d)"
+            base=http://security.ubuntu.com/ubuntu/pool/main/o/openssl
+            deb="$(curl -sSfL "$base/" \
+                   | grep -oE 'libssl1\.1_[^"]*_amd64\.deb' | sort -V | tail -1)"
+            [ -n "$deb" ] || { echo "!! no libssl1.1 .deb in $base" >&2; exit 1; }
+            curl -sSfL -o "$tmp/libssl.deb" "$base/$deb"
+            dpkg-deb -x "$tmp/libssl.deb" "$tmp/x"
+            mkdir -p "$lib"
+            cp -a "$tmp"/x/usr/lib/x86_64-linux-gnu/lib{ssl,crypto}.so.1.1 "$lib"/
+          fi
+          echo "PS4_PKGTOOL_OPENSSL_LIB=$lib" >> "$GITHUB_ENV"
+          ls -l "$lib"
+
       - name: Restore the OpenOrbis SDK
         id: sdk-cache
         uses: actions/cache@v4
