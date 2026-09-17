@@ -72,6 +72,70 @@ rm -f "${OUT}/liborbis-compat.a"
 llvm-ar rcs "${OUT}/liborbis-compat.a" "${objs[@]}" 2>/dev/null || ar rcs "${OUT}/liborbis-compat.a" "${objs[@]}"
 echo "== ${OUT}/liborbis-compat.a"
 
+# ---------------------------------------------------------------------------------- crt
+#
+# ⚠ NOT IN THE ARCHIVE, AND NOT BUILT WITH THE ARCHIVE'S FLAGS. crt/ is this repository's own C
+# runtime startup - the objects a link line NAMES BY PATH, ahead of nothing and after everything, and
+# which are therefore the opposite of an archive member: always linked, never selected.
+#
+# They exist for one reason, and crt/orbis_crt1.c argues it at length: the SDK's lib/crt1.o and
+# lib/crtlib.o are the only objects that toolchain puts INSIDE a user's binary whose licence is not
+# settled, and crtlib.o's source is in a GPL-3.0 tree with no linking exception. Everything else the
+# SDK contributes to an eboot is musl, LLVM's runtimes or Sony's own modules; its GPL-3.0 tools -
+# create-fself, create-gp4, readoelf, PkgTool - run at build time and stay behind.
+#
+# What is built, and what deliberately is not:
+#
+#   crt1.o    the executable entry point.               Built. This is the one that matters: it is
+#                                                       what cmake/ps4-openorbis.cmake names on every
+#                                                       link line the port makes.
+#   crtlib.o  the module (.prx/.sprx) entry point.      Built. Its GPL-3.0 source is the only crt
+#                                                       source actually present upstream.
+#   crti.o    the .init/.fini prologue.                 Built, and byte-identical - but see the ⚠ in
+#   crtn.o    the .init/.fini epilogue.                 crt/orbis_crti.S: NOTHING in this toolchain
+#                                                       links either of them.
+#   crt_dyn.o crt1 plus an inline .init_array walk.     ⚠ NOT BUILT, ON PURPOSE. This libc already
+#                                                       walks .init_array: libc.a's
+#                                                       __libc_start_main.lo defines libc_start_init,
+#                                                       which calls _init() and then iterates
+#                                                       __init_array_start..__init_array_end. The
+#                                                       SDK's crt_dyn.o walks the SAME range again
+#                                                       from _init_and_main before calling main, so
+#                                                       every static constructor in an image linked
+#                                                       with it runs TWICE. No link recipe in the SDK
+#                                                       or in this repository uses it. Reproducing it
+#                                                       would mean reproducing that.
+#   Scrt1.o   crt1 with _start_ps4_c left undefined.    Not built. Nothing references it, and it is
+#   rcrt1.o   crt1 plus musl's own static-PIE loader.   not among the objects this replaces; rcrt1.o
+#                                                       carries 0x189 bytes of self-relocation for a
+#                                                       job the PS4 loader does itself.
+#
+# ⚠ NO -fdata-sections HERE, and that is load-bearing rather than tidy. cmake/orbis-tls.ld matches
+# `*(.data)` and NOT `*(.data.*)` - the same omission whose ⚠ block in that file cost a console launch
+# over thread-locals - so a per-object data section would become an orphan and the ALIGN(0x4000) that
+# starts the RW segment would stop starting anything. -ffunction-sections IS used for crt1.o, because
+# the SDK's object has .text._start_ps4_c and the script matches `*(.text .text.*)`.
+#
+# ⚠ crt1.o WITHOUT UNWIND TABLES AND crtlib.o WITH THEM, matching the originals. An .eh_frame over
+# _start would invite the unwinder to walk off the top of the process; crtlib.o's four FDEs are what
+# the SDK's object has and a module's exceptions are a real path.
+#
+# ⚠ AND -fomit-frame-pointer IS NOT AN OPTIMISATION HERE. Without it clang builds a frame in
+# _start_ps4_c, and that function must reach __libc_start_main without ever writing %rsp - the loader
+# chooses the alignment and the SDK's crt preserves it through two jmps. test/crt_abi.sh checks the
+# artifact for it rather than trusting this line.
+CRT_OUT="${OUT}/crt"
+CRT_BASE=(--target=x86_64-pc-freebsd12-elf -fPIC -O2 -fomit-frame-pointer -fno-stack-protector
+          -Wall -Wextra -std=c11)
+mkdir -p "${CRT_OUT}"
+clang "${CRT_BASE[@]}" -ffunction-sections -fno-asynchronous-unwind-tables -fno-unwind-tables \
+      -c "${ROOT}/crt/orbis_crt1.c"   -o "${CRT_OUT}/crt1.o"
+clang "${CRT_BASE[@]}" -funwind-tables \
+      -c "${ROOT}/crt/orbis_crtlib.c" -o "${CRT_OUT}/crtlib.o"
+clang --target=x86_64-pc-freebsd12-elf -c "${ROOT}/crt/orbis_crti.S" -o "${CRT_OUT}/crti.o"
+clang --target=x86_64-pc-freebsd12-elf -c "${ROOT}/crt/orbis_crtn.S" -o "${CRT_OUT}/crtn.o"
+echo "== ${CRT_OUT}/{crt1,crtlib,crti,crtn}.o"
+
 [[ ${CHECK} -eq 1 ]] || exit 0
 
 # ---------------------------------------------------------------------------------- check
@@ -113,4 +177,37 @@ cc -funwind-tables -I"${ROOT}/include" -o "${WORK}/bt" "${ROOT}/src/orbis_backtr
 "${WORK}/bt" >/dev/null
 echo "== backtrace collects frames, bounds its buffer and formats addresses"
 
+# 5. The crt objects present the same interface as the SDK's - section by section, symbol by symbol,
+#    byte by byte. ⚠ THIS IS ALL THAT CAN BE CHECKED HERE: the objects are never linked, because this
+#    is a cross build with no ld.lld on the path and nothing to run the result on. What it does prove
+#    is that everything the loader reads is bit-for-bit what it reads today, and that every symbol a
+#    linker resolves is in the same place with the same binding - with one documented exception per
+#    object, which the check names rather than tolerates.
+OBJDUMP="${OBJDUMP:-$(command -v llvm-objdump || command -v objdump || true)}"
+[[ -n "${OBJDUMP}" ]] || { echo "!! no objdump - set OBJDUMP=<path>" >&2; exit 1; }
+[[ -f "${TC}/lib/crt1.o" ]] || {
+  echo "!! ${TC}/lib/crt1.o is missing, so there is nothing to compare against. That file is what" >&2
+  echo "   crt/ replaces; a check that cannot see it would pass by saying nothing." >&2; exit 1; }
+OBJDUMP="${OBJDUMP}" "${ROOT}/test/crt_abi.sh" "${CRT_OUT}" "${TC}/lib"
+
+#    ...and it must FAIL when pointed at something that is not the thing under test, exactly as
+#    sizes.c and declarations.c must. Four objects that compile and define nothing the loader wants.
+mkdir -p "${WORK}/decoy"
+printf 'int _start_ps4_c(void) { return 0; }\n' > "${WORK}/decoy.c"
+for o in crt1 crtlib crti crtn; do
+  clang --target=x86_64-pc-freebsd12-elf -fPIC -c "${WORK}/decoy.c" -o "${WORK}/decoy/${o}.o"
+done
+if OBJDUMP="${OBJDUMP}" "${ROOT}/test/crt_abi.sh" "${WORK}/decoy" "${TC}/lib" >/dev/null 2>&1; then
+  echo "!! crt_abi.sh passes against a decoy object - the check proves nothing" >&2; exit 1
+fi
+echo "== the crt objects match the SDK's interface, and the check fails without them"
+
 echo "== all checks passed"
+
+# ---------------------------------------------------------------------------------- what is NOT checked
+#
+# ⚠ NOTHING ABOVE LINKS, BOOTS OR RUNS ANYTHING ON A CONSOLE, and for crt/ that gap is the whole
+# remaining risk: an entry point that presents the right symbols can still be the wrong entry point.
+# The link line is selected by ORBIS_CRT in cmake/ps4-openorbis.cmake and defaults to the SDK's
+# object for exactly that reason. What a person with ld.lld and a console has to run to close it is
+# written out at the bottom of that file, under "confirming ORBIS_CRT=own".

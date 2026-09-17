@@ -1,0 +1,245 @@
+// Copyright © 2026 Mikołaj Mikołajczyk
+// SPDX-License-Identifier: MIT
+//
+// crt1.o for the PlayStation 4: the entry point of every executable this toolchain builds.
+//
+// ------------------------------------------------------------------ why this file exists
+//
+// The OpenOrbis SDK's `lib/crt1.o` is the only object that toolchain links into the user's binary
+// whose licence is not settled. Everything else that reaches an eboot is musl (MIT),
+// libc++/libc++abi/libunwind (Apache-2.0 WITH LLVM-exception) or Sony's own modules; the GPL-3.0
+// parts of the SDK - create-fself, create-gp4, readoelf, PkgTool - are build-time tools, which
+// produce output and do not travel in it.
+//
+// ⚠ AND THE PROVENANCE OF crt1.o IS NOT DECIDABLE FROM WHAT IS SHIPPED, which is the whole problem.
+// The object carries no licence header. Its `.strtab` says it was built from a file called `crt1.c`
+// by "clang version 18.1.4". That `crt1.c` is NOT in the toolchain repository's `src/crt/`, which
+// holds only `crtlib.c` and `crtlib.S`. The SDK's own `src/README.md` says "Games/apps CRT is
+// handled by musl already", which points instead at musl's MIT-licensed `crt/crt1.c`. So the honest
+// reading is that it is probably musl-derived and probably MIT, and that nothing in the delivered
+// artifact proves either way - while the repository it is built in is GPL-3.0 with no per-file
+// headers and no linking exception. An independent implementation ends the question instead of
+// arguing it.
+//
+// ------------------------------------------------------------------ what was taken and what was not
+//
+// Written from the OBSERVABLE INTERFACE only: section names, symbol names, structure layouts and the
+// register contract at the entry point. Those are facts about the platform and were measured here
+// with objdump - crt/orbis_sce_params.h documents the method. No source from the OpenOrbis toolchain
+// was transcribed, and this is not their shape: theirs is assembler emitted inline from a C file,
+// this is C structures whose every offset the compiler checks.
+//
+// ------------------------------------------------------------------ the entry contract, measured
+//
+// From `objdump -d -r $OO_PS4_TOOLCHAIN/lib/crt1.o`. The loader enters at `_start` with ONE
+// argument, in %rdi, pointing at a block whose first word is argc and whose following quads are
+// argv. The SDK's `_start` is a bare `jmp` into a C function, and that function does:
+//
+//     movl (%rdi), %esi          argc, read 32-bit out of an 8-byte slot
+//     leaq 0x8(%rdi), %rdx       argv
+//     movq main@GOTPCREL, %rdi
+//     movq _init@GOTPCREL, %rcx      <- weak undefined
+//     movq _fini@GOTPCREL, %r8       <- weak undefined
+//     xorl %r9d, %r9d
+//     jmp  __libc_start_main
+//
+// so the call is `__libc_start_main(main, argc, argv, _init, _fini, NULL)` - glibc's six-argument
+// shape, of which this libc reads three.
+//
+// ⚠ THE LAST THREE ARGUMENTS ARE IGNORED BY THIS LIBC, which is worth knowing before anyone "fixes"
+// them. `objdump -d $OO_PS4_TOOLCHAIN/lib/libc.a`, member `__libc_start_main.lo`: the function
+// touches %rdi, %esi and %rdx and nothing else, derives envp as (argv + argc + 1) for `__init_libc`,
+// and tail-jumps into `libc_start_main_stage2`. They are passed anyway - three instructions, and a
+// libc that grew to read them would otherwise see garbage.
+//
+// ⚠ AND NOTHING HERE RUNS .init_array. The same archive member defines `libc_start_init`, which
+// calls `_init()` and then walks `__init_array_start..__init_array_end` itself. A crt that also
+// walked it would run every static constructor twice; that is the defect recorded against the SDK's
+// crt_dyn.o in build.sh, and the reason this repository ships no replacement for that object.
+//
+// ⚠ `_init` AND `_fini` ALWAYS RESOLVE, to no-ops inside libc. The same member defines both as WEAK
+// stubs - `.text.dummy` is `xorl %eax,%eax; ret` and `.text.dummy1` is `ret` - which is musl's
+// `weak_alias(dummy, _init)` idiom. That is why this toolchain needs neither crti.o nor crtn.o, and
+// why the weak references below cannot become an undefined-symbol error.
+//
+// ------------------------------------------------------------------ the tail jump is load-bearing
+//
+// ⚠ NEITHER `_start` NOR `_start_ps4_c` MAY PUSH ANYTHING. The loader chooses the stack pointer it
+// enters with, and the System V x86-64 ABI fixes %rsp's alignment at a call boundary. The SDK's crt
+// reaches `__libc_start_main` through two `jmp`s and no `push`, so libc sees exactly the alignment
+// the loader chose; turning either into a `call` shifts %rsp by 8 for the life of the process, and
+// an unaligned `movaps` deep inside libc is how that would announce itself - far from here.
+// So the check for it is on the ARTIFACT rather than on the intent: test/crt_abi.sh disassembles
+// `.text._start_ps4_c` and fails the build if a single instruction in it writes %rsp. clang's
+// `musttail` cannot be used here - it requires the two signatures to have the same parameter count,
+// and these are 1 and 6 - and an attribute that cannot be applied is not a guarantee.
+#include "orbis_sce_params.h"
+
+// ---------------------------------------------------------------- the block the loader passes
+//
+// Named for what was measured rather than guessed at. `argc` occupies eight bytes and the SDK's crt
+// reads four of them; the upper half is not known to be anything, so nothing here relies on it.
+// `argv` is NULL-terminated and envp follows it - not an assumption, but what `__init_libc` does
+// with what it is handed.
+struct orbis_entry_block {
+    uint64_t argc;
+    char    *argv[];
+};
+
+extern int main(int argc, char **argv, char **envp);
+
+extern void _init(void) __attribute__((weak));
+extern void _fini(void) __attribute__((weak));
+
+extern int __libc_start_main(int (*)(int, char **, char **), int, char **,
+                             void (*)(void), void (*)(void), void (*)(void));
+
+// ---------------------------------------------------------------- .data, in the SDK's order
+//
+// ⚠ PLAIN `.data`, AND THIS FILE IS COMPILED WITHOUT -fdata-sections. cmake/orbis-tls.ld matches
+// `*(.data)` and not `*(.data.*)` - the same omission whose ⚠ block in that file explains what an
+// orphan section does to the page alignment of the RW segment, and what the console says when it
+// refuses the result. A `.data.sceLibcHeapSize` would be an orphan for exactly that reason. The
+// `section(".data")` attributes below also force the zero-valued objects into `.data` rather than
+// `.bss`, which is where C would otherwise put them and is not where the SDK's object has them.
+//
+// Layout, from `objdump -t -s -j .data $OO_PS4_TOOLCHAIN/lib/crt1.o`:
+//
+//     0x00  sceLibcHeapExtendedAlloc      01 00 00 00   (four bytes of padding follow)
+//     0x08  sceLibcHeapSize               ff ff ff ff ff ff ff ff
+//     0x10  sce_libc_heap_delayed_alloc   00 00 00 00
+//     0x14  sce_libc_heap_extended_alloc  00 00 00 00
+//     0x18  __dso_handle                  0
+//     0x20  _sceLibc                      0
+//
+// ⚠ THE TWO HEAP KNOBS ARE LOCAL, AND MUST STAY LOCAL. `optional/orbis_bigheap.c` defines
+// `sceLibcHeapSize` and `sceLibcHeapExtendedAlloc` as EXPORTED globals for consumers that opt into an
+// unlimited libc heap, because libSceLibcInternal resolves those two names at load time. A global
+// definition here would be a duplicate-symbol error against that file; a local one cannot be, which
+// is how the SDK's own object has it.
+//
+// ⚠ THE VALUES ARE THE SDK's, CARRIED ACROSS UNCHANGED, AND THEY ARE ALSO AN OPEN QUESTION. The
+// shipped crt1.o already asks for SIZE_MAX with extended allocation through the parameter block, and
+// dEQP still exhausted its heap before main - the measurement `optional/orbis_bigheap.c` exists for,
+// which only the exported-by-name route fixed. Whatever the loader does with these two through the
+// parameter block is therefore not what it does with the same two names when it looks them up.
+// Changing them here would move a variable in a question that is already open, and the point of
+// ORBIS_CRT=own is to differ from ORBIS_CRT=sdk in as few ways as possible.
+#define ORBIS_CRT_DATA __attribute__((section(".data"), used))
+
+static ORBIS_CRT_DATA uint32_t sceLibcHeapExtendedAlloc     = 1;
+static ORBIS_CRT_DATA size_t   sceLibcHeapSize              = SIZE_MAX;
+static ORBIS_CRT_DATA uint32_t sce_libc_heap_delayed_alloc  = 0;
+static ORBIS_CRT_DATA uint32_t sce_libc_heap_extended_alloc = 0;
+
+// ⚠ WEAK AND HIDDEN, WHERE THE SDK's IS LOCAL - the one deliberate symbol-table deviation in this
+// file, and the reason is measurable. Six members of `$OO_PS4_TOOLCHAIN/lib/libc++.a` reference
+// `__dso_handle` as GLOBAL HIDDEN UND (it is the second argument every `__cxa_atexit` registration
+// passes), and NOTHING in the SDK defines it globally: `objdump -t` over every lib/*.a and lib/*.o
+// finds it defined only in crt1.o and crtlib.o, LOCAL in both, where it cannot satisfy those
+// references. A hidden definition is what crtbegin.o provides on every other ELF target, and weak is
+// what keeps it from colliding with a translation unit that already carries its own. Hidden means
+// "not exported dynamically", which for this name is correct - see README §2.6b for the same
+// distinction drawn about the mmap interposers.
+ORBIS_CRT_DATA __attribute__((visibility("hidden"), weak)) void *__dso_handle = 0;
+
+// Carried verbatim. It is present in the SDK's crt1.o and crtlib.o, local, zero, with no relocation
+// pointing at it and no reference to it anywhere in the SDK's libraries or headers. What reads it,
+// if anything does, was not established here - so it is reproduced rather than dropped.
+static ORBIS_CRT_DATA void *_sceLibc = 0;
+
+// ---------------------------------------------------------------- the parameter blocks
+//
+// Each in its own section, named by hand rather than produced by -fdata-sections, for the reason
+// above: the section name is the interface. `const` puts them in `.data.rel.ro`, which is what the
+// SDK's object does and what cmake/orbis-tls.ld KEEPs into the page-aligned relro output section.
+// ⚠ THE SECTION KEEPS THE LEADING UNDERSCORE AND THE VARIABLE DOES NOT, for the three replacement
+// tables - `.data.rel.ro._sceLibcMallocReplace` holding `sceLibcMallocReplace`. That looks like a
+// typo and is not: it is what `objdump -t $OO_PS4_TOOLCHAIN/lib/crt1.o` shows, and matching it keeps
+// the symbol-table comparison in test/crt_abi.sh down to the one difference this file means to make.
+// The three parameter blocks below them do carry the underscore in both places.
+#define ORBIS_RELRO(name) __attribute__((section(".data.rel.ro." name), used, aligned(8)))
+
+static ORBIS_RELRO("_sceLibcMallocReplace")
+const struct orbis_malloc_replace sceLibcMallocReplace = {
+    .size = sizeof(struct orbis_malloc_replace), .version = 1,
+};
+
+static ORBIS_RELRO("_sceLibcNewReplace")
+const struct orbis_new_replace sceLibcNewReplace = {
+    .size = sizeof(struct orbis_new_replace), .version = 2,
+};
+
+static ORBIS_RELRO("_sceLibcMallocReplaceForTls")
+const struct orbis_malloc_replace_for_tls sceLibcMallocReplaceForTls = {
+    .size = sizeof(struct orbis_malloc_replace_for_tls), .version = 1,
+};
+
+static ORBIS_RELRO("_sceKernelMemParam")
+const struct orbis_kernel_mem_param _sceKernelMemParam = {
+    .size = sizeof(struct orbis_kernel_mem_param),
+};
+
+static ORBIS_RELRO("_sceKernelFsParam")
+const struct orbis_kernel_fs_param _sceKernelFsParam = {
+    .size = sizeof(struct orbis_kernel_fs_param),
+};
+
+static ORBIS_RELRO("_sceLibcParam")
+const struct orbis_libc_param _sceLibcParam = {
+    .size                   = sizeof(struct orbis_libc_param),
+    .unknown_08             = 0x0000000c,
+    .unknown_0c             = 0x00000001,
+    .heap_size              = &sceLibcHeapSize,
+    .heap_extended_alloc    = &sceLibcHeapExtendedAlloc,
+    .malloc_replace         = &sceLibcMallocReplace,
+    .new_replace            = &sceLibcNewReplace,
+    .malloc_replace_for_tls = &sceLibcMallocReplaceForTls,
+};
+
+// ⚠ `.data.sce_process_param` IS WHAT MAKES THIS AN EXECUTABLE THE CONSOLE WILL START. It is KEEPt
+// into its own ALIGN(0x4000) output section by cmake/orbis-tls.ld; create-fself finds it there and
+// records it in the OELF. A module carries `.data.sce_module_param` instead and never both - see
+// crt/orbis_crtlib.c.
+//
+// The SDK version word is 0x04508101, read straight out of the shipped object. It is not derived
+// from anything here and is not a number to invent: it is what every crt object this SDK ships
+// carries, and the loader compares it against the firmware.
+__attribute__((section(".data.sce_process_param"), used, aligned(8)))
+static const struct orbis_process_param _sceProcessParam = {
+    .size             = sizeof(struct orbis_process_param),
+    .magic            = ORBIS_PROCESS_PARAM_MAGIC,
+    .entry_count      = 3,
+    .sdk_version      = 0x04508101,
+    .libc_param       = &_sceLibcParam,
+    .kernel_mem_param = &_sceKernelMemParam,
+    .kernel_fs_param  = &_sceKernelFsParam,
+};
+
+// Thirty-two bytes of .bss, global, that nothing in the SDK reads: `grep -r __ps4Argv` over the
+// SDK's headers, samples and sources finds nothing, and `objdump -t` over every lib/*.a finds no
+// reference either. It is reproduced because it is GLOBAL in the shipped object, which means
+// homebrew outside this toolchain may name it, and thirty-two bytes is a cheap way not to find out
+// the hard way. Nothing here writes it - neither does the SDK's crt.
+__attribute__((section(".bss.__ps4Argv"), used)) char *__ps4Argv[4];
+
+// ---------------------------------------------------------------- the entry point
+//
+// `_start` in plain `.text` (the linker script matches `*(.text .text.*)`, so either would work, but
+// the SDK's object has it here and there is no reason to move it), and nothing but a jump. In
+// assembler, because C cannot express "a symbol that is not a function and pushes nothing".
+__asm__(".section .text,\"ax\",@progbits\n"
+        ".globl _start\n"
+        "_start:\n"
+        "    jmp _start_ps4_c\n");
+
+// Compiled with -ffunction-sections, so this lands in `.text._start_ps4_c` exactly as the SDK's
+// does. `used` because nothing in this translation unit calls it - only the asm above does, and the
+// compiler cannot see that.
+__attribute__((used))
+int _start_ps4_c(const struct orbis_entry_block *entry)
+{
+    // A tail call, and test/crt_abi.sh is what proves it stayed one. See the ⚠ above.
+    return __libc_start_main(main, (int)entry->argc, (char **)entry->argv,
+                             _init, _fini, (void (*)(void))0);
+}

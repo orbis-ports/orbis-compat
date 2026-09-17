@@ -217,8 +217,90 @@ set(PS4_LINK_FLAGS
 set(CMAKE_EXE_LINKER_FLAGS_INIT
   "${PS4_LINK_FLAGS} -Wl,--whole-archive ${ORBIS_COMPAT_LIBRARY} -Wl,--no-whole-archive")
 
+# ---------------------------------------------------------------------------- ORBIS_CRT
+#
+# WHICH C RUNTIME STARTUP OBJECT GOES ON THE LINK LINE: `sdk` (the default) or `own`.
+#
+#     -DORBIS_CRT=own          or   ORBIS_CRT=own in the environment
+#
+# Resolved the same way OO_PS4_TOOLCHAIN and ORBIS_COMPAT_DIR are above - an explicit -D first, then
+# the environment, then a default - because a knob that only one of those three reaches is a knob
+# somebody will set and watch do nothing. The compile-time relatives of this switch are
+# ORBIS_UMTX_LIBKERNEL (README §6.3) and the runtime ones ORBIS_THREAD_STACK and ORBIS_SIGEV_THREAD;
+# all of them exist so an A/B can be run by the person holding the console rather than scheduled.
+#
+# ⚠ THIS ONE COSTS A RELINK, NOT A REBUILD, and that is the most it can cost. Both objects are built
+# unconditionally - the SDK ships its set, `./build.sh` produces ours - so switching is `cmake
+# -DORBIS_CRT=own` over an existing build directory and whatever relinks. Nothing recompiles.
+#
+# WHY THE DEFAULT IS `sdk` WHEN THE POINT OF crt/ IS TO REPLACE IT. Everything this repository can
+# check about the replacement passes, and that is genuinely a lot: test/crt_abi.sh finds every
+# allocatable data section byte-identical to the SDK's crt1.o - `.data.sce_process_param`,
+# `.data.rel.ro._sceLibcParam` and the four blocks it points at, `.data` with the heap knobs in it -
+# every relocation identical, and `.text._start_ps4_c` identical instruction for instruction. But
+# NOTHING HAS LINKED IT, on this machine or anywhere: there is no ld.lld here and no console, so the
+# first time these objects meet a linker will be on somebody else's machine. And there is one
+# deliberate link-visible change in them - `__dso_handle` is weak-hidden-global where the SDK's is
+# local, because six members of the SDK's libc++.a reference it as GLOBAL HIDDEN UND and nothing in
+# the SDK defines it globally - which is exactly the kind of change that a link, and only a link,
+# decides the meaning of.
+#
+# So the default stays with the object this port has booted and played a game on, and flipping it is
+# a one-word change for whoever runs the experiment. The condition for flipping it is not a feeling:
+#
+#     confirming ORBIS_CRT=own
+#     ---------------------------------------------------------------------------------------------
+#     ./build.sh                                          # builds build/crt/*.o and checks them
+#     cmake -S <title> -B <build> -DCMAKE_TOOLCHAIN_FILE=<repo>/cmake/ps4-openorbis.cmake \
+#           -DORBIS_CRT=own
+#     cmake --build <build>                               # THE LINK is the first new thing
+#     llvm-readelf -h <build>/<title>.elf                 # e_entry must be _start's address
+#     llvm-readelf -lW <build>/<title>.elf                # every PT_LOAD p_vaddr 0x4000-aligned,
+#                                                         # and a PT_LOAD covering .data.sce_process_param
+#     llvm-nm <build>/<title>.elf | grep -E '_sceProcessParam|__dso_handle|_start$'
+#     scripts/ps4/make-pkg.sh ... && scripts/ps4/deploy.sh --pkg <file> --name <short>
+#     # then, on the console: install, run, and read the log. Three things must appear, in order -
+#     # the title's first log line at all (the loader accepted the image and reached _start), a line
+#     # written from a static constructor (libc's own .init_array walk happened), and the title
+#     # reaching the point it reaches today. A black screen with "Cannot start the application" and
+#     # no log is the loader refusing the image, which is a parameter-block or segment problem;
+#     # a log that starts and stops before any constructor is the .init_array end of it.
+#     ---------------------------------------------------------------------------------------------
+#
+# ⚠ AND THERE IS NO "the object must already exist" CHECK, for the reason the block above gives about
+# the archive: a missing build/crt/crt1.o is a link error that names the path it wanted, which is a
+# better failure than a configure-time refusal that also blocks the fix.
+if (NOT ORBIS_CRT)
+  if (DEFINED ENV{ORBIS_CRT})
+    set(ORBIS_CRT "$ENV{ORBIS_CRT}")
+  else ()
+    set(ORBIS_CRT "sdk")
+  endif ()
+endif ()
+set(ORBIS_CRT "${ORBIS_CRT}" CACHE STRING "C runtime startup objects: sdk (the SDK's) or own (orbis-compat's)")
+set_property(CACHE ORBIS_CRT PROPERTY STRINGS sdk own)
+
+if (ORBIS_CRT STREQUAL "sdk")
+  set(ORBIS_CRT1 "${OO_PS4_TOOLCHAIN}/lib/crt1.o")
+elseif (ORBIS_CRT STREQUAL "own")
+  set(ORBIS_CRT1 "${ORBIS_COMPAT_DIR}/build/crt/crt1.o")
+else ()
+  message(FATAL_ERROR "ORBIS_CRT is '${ORBIS_CRT}'; it takes 'sdk' or 'own' and nothing else.")
+endif ()
+if (NOT CMAKE_IN_TRY_COMPILE)
+  message(STATUS "PS4: crt1.o from ${ORBIS_CRT} - ${ORBIS_CRT1}")
+endif ()
+
 # crt1.o goes last, after the SDK libs — the order the SDK's own link rule uses.
-set(CMAKE_C_STANDARD_LIBRARIES   "-lc -lkernel -lc++ ${OO_PS4_TOOLCHAIN}/lib/crt1.o")
+#
+# ⚠ AND ONLY crt1.o, whichever set it comes from. The SDK also ships crtlib.o, crti.o, crtn.o and
+# crt_dyn.o, and this toolchain file has never named any of them: crtlib.o is a MODULE's entry point
+# and belongs on a .prx link line, not an executable's; crti.o/crtn.o are the .init/.fini fragment
+# pair, which this libc does not use (it defines _init and _fini as weak no-ops inside
+# __libc_start_main.lo and calls _init directly) and for which cmake/orbis-tls.ld has no output
+# section at all; crt_dyn.o would run every static constructor twice against this libc. The same four
+# reasons are written out, with the evidence, in build.sh's crt section.
+set(CMAKE_C_STANDARD_LIBRARIES   "-lc -lkernel -lc++ ${ORBIS_CRT1}")
 set(CMAKE_CXX_STANDARD_LIBRARIES "${CMAKE_C_STANDARD_LIBRARIES}")
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
@@ -237,7 +319,20 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 # OpenOrbis sample uses for a homebrew eboot.
 if(NOT COMMAND ps4_create_eboot)
   function(ps4_create_eboot target)
-    find_program(PS4_CREATE_FSELF NAMES create-fself PATHS "${OO_PS4_BINDIR}" NO_DEFAULT_PATH)
+    # ⚠ THE macOS BINARY IS NOT CALLED create-fself. The SDK ships bin/linux/create-fself and
+    # bin/windows/create-fself.exe, but bin/macos/create-fself-MACOS. Searching for the Linux
+    # spelling alone found nothing on a Mac, and because this is a WARNING rather than an error
+    # the build carried on, produced no eboot.bin, and the failure surfaced much later in
+    # whatever consumed it - for OpenGothic, make-pkg refusing and make then DELETING the
+    # freshly linked .elf:
+    #
+    #     make-pkg: eboot not found: .../build/opengothic/eboot.bin
+    #     make[3]: *** Deleting file `opengothic/Gothic2Notr.elf'
+    #
+    # Measured by bundle-gate.sh stage 5, 2026-09-17, after the port had compiled and linked
+    # 100% clean. PkgTool.Core is spelled the same on all three hosts; only this one differs.
+    find_program(PS4_CREATE_FSELF NAMES create-fself create-fself-macos
+                 PATHS "${OO_PS4_BINDIR}" NO_DEFAULT_PATH)
     if(NOT PS4_CREATE_FSELF)
       message(WARNING "create-fself not found in ${OO_PS4_BINDIR}; skipping eboot for ${target}")
       return()
