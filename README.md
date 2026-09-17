@@ -12,6 +12,141 @@ been offered - §7 records where each item would belong, not an arrangement with
 
 ---
 
+## 0. Build something and put it on a console
+
+Everything below this section explains *why*. This section is *how*, and it is first because the
+question it answers used to be answered on page four.
+
+### 0.1 The short way: one script
+
+```sh
+scripts/orbis-new.sh --check        # what is missing, and how to fix each thing
+scripts/orbis-new.sh mygame         # a project that builds, packages and uploads
+```
+
+`--check` changes nothing, needs no console and no network. It reports each dependency with what it
+is and why it is needed, then prints the remedies as a numbered list to copy:
+
+```
+3 step(s) to do - nothing was created.
+
+do this, in order:
+  1. brew install llvm lld   # then put /opt/homebrew/opt/llvm/bin and .../lld/bin on PATH
+  2. brew install cmake
+  3. install the OpenOrbis SDK into ~/.local/opt/openorbis (commands above),
+     then export OO_PS4_TOOLCHAIN=~/.local/opt/openorbis
+```
+
+With a name it writes `CMakeLists.txt`, `main.c`, a `build.sh` that configures, builds, packages and
+optionally uploads (`./build.sh --deploy <console-ip>`), a `.gitignore` and a README. `--type cpp`
+gives C++; `--type vulkan` gives RADV, a headless surface, a swapchain and a triangle, which is
+§0.3's example as a starting point rather than a thing to read.
+
+⚠ **The generated sources already avoid the three traps at the end of this section**, and say why in
+a comment rather than just being correct - a fixed mistake with no reason attached is a mistake
+somebody re-introduces.
+
+The rest of §0 is what that script does, for anyone who would rather do it by hand or wants to know
+what it is doing to their machine. (It touches nothing outside the paths it names.)
+
+### 0.2 By hand
+
+**On the host** you need: `clang`, `clang++`, `ld.lld`, `llvm-ar`, `llvm-ranlib`, `llvm-nm`, `cmake`
+and `ninja` or `make`. The SDK ships **no compiler** - it is prebuilt libraries and headers, and
+clang comes from the machine. On Debian/Ubuntu `apt-get install clang lld llvm cmake ninja-build`;
+on macOS `brew install llvm lld cmake ninja` and put `/opt/homebrew/opt/llvm/bin` and
+`/opt/homebrew/opt/lld/bin` on `PATH`, because Apple's clang carries none of them. macOS also needs
+Rosetta (`softwareupdate --install-rosetta`): every tool in the SDK's `bin/macos` is an x86_64
+binary.
+
+```sh
+# 1. the SDK, and the overlay that corrects it
+#    v0.5.4, asset toolchain-llvm-18.tar.gz, unpacked so that link.x is at the root
+export OO_PS4_TOOLCHAIN=~/.local/opt/openorbis
+git clone https://github.com/orbis-ports/orbis-compat && cd orbis-compat
+./build.sh                       # builds build/liborbis-compat.a, then checks it
+
+# 2. the worked example
+cmake -S scripts/release/hello -B /tmp/hello -G Ninja \
+      -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/ps4-openorbis.cmake"
+cmake --build /tmp/hello         # -> hello, hello.oelf, eboot.bin
+
+# 3. a package, and onto the console
+scripts/ps4/make-pkg.sh --eboot /tmp/hello/eboot.bin --out-dir /tmp/hello/pkg \
+      --title-id TMPS10099 --title "Orbis SDK Hello"
+scripts/ps4/deploy.sh  --pkg /tmp/hello/pkg/*.pkg --name hello --host <console-ip>
+```
+
+Install it from the console's package menu and start it. `scripts/ps4/logs.sh` catches the output;
+a run that worked says this and then idles, showing a black screen:
+
+```
+orbis-sdk bundle: hello
+backtrace: 1 frames
+malloc_usable_size(64) = 80
+orbis-sdk bundle: all checks passed
+```
+
+### 0.3 The second example: a triangle on the television
+
+`hello` proves the **layout** - corrected headers, the overlay under `--whole-archive`, the linker
+script, `crt1.o`, `create-fself` - and touches no Mesa, so nothing else can fail and be mistaken for
+it. `scripts/release/triangle/` is the other half: RADV, a swapchain, a pipeline compiled from
+SPIR-V, and a frame on the screen. Two examples rather than one because a single one mixing both
+reports a driver problem as a layout problem and the reverse.
+
+It needs the Mesa bundle and `glslangValidator` on the host (`apt-get install glslang-tools` /
+`brew install glslang`):
+
+```sh
+cmake -S scripts/release/triangle -B /tmp/tri -G Ninja \
+      -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/ps4-openorbis.cmake" \
+      -DORBIS_MESA_SRC=<mesa-bundle> -DORBIS_MESA_BUILD=<mesa-bundle>/build-orbis
+cmake --build /tmp/tri
+```
+
+Every Vulkan call is checked and named, so a failure says which step rather than showing a black
+screen - which is what this console shows for a dozen unrelated reasons:
+
+```
+orbis-sdk bundle: triangle
+triangle: ok   vkCreateInstance
+triangle: ok   vkCreateHeadlessSurfaceEXT
+triangle: GPU '...', api 1.x.y, driver 0x........
+triangle: queue family 0 renders and presents
+triangle: surface 1920x1080, format ..., 2..N images
+triangle: ok   vkCreateGraphicsPipelines
+triangle: setup complete - presenting
+triangle: frame 0 presented
+```
+
+⚠ **The surface is `VK_EXT_headless_surface`, and that is the one platform-specific line in it.**
+There is no window system, so there is nothing for a `VkSurfaceKHR` to attach to;
+`mesa-ps4/src/vulkan/wsi/wsi_orbis.c` turns a headless present into `sceVideoOutRegisterBuffers` +
+`sceVideoOutSubmitFlip`. Tempest does the same and says why (`vswapchain.cpp:264`). Everything else
+in the file is ordinary Vulkan.
+
+⚠ **Verified on hardware 2026-09-17**, along with `hello`. Two things were found by writing it, both
+now fixed where they belonged rather than worked around here: `ps4-vkloader` did not carry zlib,
+which RADV's shader cache imports, so a consumer that was not already linking it met eight undefined
+symbols; and `mesa-ps4`'s batch table still called `wsi_orbis.c` *pending* long after it landed,
+which is read as a fact about the code and cost an argument that this example could not draw at all.
+
+⚠ **`-D` on the cmake command line does not survive into `try_compile`**, which is where this
+toolchain file is read a second time. `OO_PS4_TOOLCHAIN` and `ORBIS_COMPAT_DIR` are therefore set in
+the ENVIRONMENT above, not passed with `-D`. Passed with `-D` they are lost inside CMake's own
+compiler test and the configure fails telling you to pass the flag you just passed.
+
+⚠ **Returning from `main()` is reported as a crash on this console** (`CE-34878-0`), and the log
+shows `SIGSYS` inside `_exit`. That is the platform, not your program: `hello` ends in an idle loop
+for that reason and `optional/ps4_app.cpp` installs `ps4_idle_forever` for the same one. Close the
+title from the PS button menu.
+
+⚠ **No env file is needed for a normal run.** See §9.5 - a claim to the contrary lived in this file
+until 2026-09-17 and was wrong.
+
+---
+
 ## 1. Why it exists
 
 The SDK ships **musl's headers over Sony's implementation**, and Sony's userland is FreeBSD-derived.
@@ -313,9 +448,24 @@ optional/                   NOT the archive - policy, added by name. orbis_netlo
                             declares ps4-netlog / ps4-app from the first two ONLY
 vkloader/                   the Vulkan C ABI: vkloader.c, 771 weak thunks, gen.py, a CMakeLists
 cmake/                      ps4-openorbis.cmake (the toolchain file), ps4-package.cmake,
-                            orbis-compat.cmake - locate / orbis::compat / verify
+                            orbis-compat.cmake - locate / orbis::compat / verify,
+                            orbis-tls.ld (GPL-3.0-only, see §8), orbis.ini.in (the meson cross file)
+crt/                        an MIT C runtime: crt1, crtlib, crti, crtn, and orbis_sce_params.h
+                            holding the loader's parameter blocks as compiler-checked structs.
+                            ORBIS_CRT=sdk|own selects; see §6.5
+licenses/  NOTICE.md  LICENSING.md
+                            the licence ledger for the redistributable bundle - one row per
+                            component, with the text every one of them requires to travel
+scripts/release/            the bundle: sdk-licenses.sh, make-sdk-bundle.sh, verify-sdk-bundle.sh,
+                            bundle-gate.sh, and the two worked examples §0 builds - hello/ (layout,
+                            no Mesa) and triangle/ (RADV, a swapchain, a frame on the television)
+.github/workflows/          sdk-bundle.yml, which cuts and verifies a bundle. Nothing else is in CI
+                            orbis-tls.ld - the linker script. ⚠ GPL-3.0-only, not MIT: it is the
+                            SDK's own link.x, corrected. §8 and the file's own header say why
+scripts/orbis-new.sh        the dependency doctor (--check) and the project generator, §0.1
 scripts/ps4/                make-pkg.sh gen-icon0.py log-receiver.py logs.sh peerfilter.py
 test/                       sizes.c declarations.c backtrace_host.c pthread_probe_host.c
+                            umtxcheck.c crt_abi.sh (the crt's section/symbol comparison)
 build.sh                    produces build/liborbis-compat.a from src/ ONLY, then checks it
 ```
 
@@ -420,7 +570,7 @@ is our workaround or their bug, which is a different question from whether it wi
 | item | belongs to | note |
 |---|---|---|
 | the four pthread sizes | **OpenOrbis/musl** | measured; extends PR #29 but corrects fewer types, see §6.1 |
-| `struct stat` layout | **OpenOrbis/musl**, with a caveat | `mode_t` is the WHOLE defect - narrowing it to FreeBSD's `uint16_t` makes the struct match the kernel field for field (measured). ⚠ But it must ship WITH a rebuilt `libc++.a`, which reads `st_size` at the wide offset and is correct today; alone it breaks `std::filesystem` silently |
+| `struct stat` layout | **OpenOrbis, and partly done** ⚠ | `mode_t` is the WHOLE defect - narrowing it to FreeBSD's `uint16_t` makes the struct match the kernel field for field (measured). ⚠ But it must ship WITH a rebuilt `libc++.a`, which reads `st_size` at the wide offset and is correct today; alone it breaks `std::filesystem` silently. ⚠ **AND UPSTREAM REACHED THE SAME DIAGNOSIS INDEPENDENTLY**: PR #278 (red-prig, merged 2025-07-21) narrows `OrbisKernelMode` to `uint16_t` in `include/orbis/_types/kernel.h`, and the field table in PLAN.md §3 matches the resulting struct field for field. Two things it does NOT settle: it corrects only the Orbis-namespaced type, so `stat()`/`fstat()` still read the wrong layout and this overlay's interposer is still required; and it is in the v0.5.4 **tag** while the v0.5.4 **release asset** is the v0.5.3 tree - `kernel.h` in the published tarball is byte-identical to v0.5.3 and still says `typedef mode_t OrbisKernelMode`. Anyone pinning the asset, which is everyone, does not have the fix |
 | `lstat`, `fstatat` | **stays ours** | not misdeclared - ABSENT. `libc.a`'s `fstatat` sets errno 78 and returns -1, and `lstat` tail-jumps into it. No typedef revives them |
 | `machine/*`, `pthread_np.h`, `execinfo.h` | **OpenOrbis toolchain** | headers the SDK simply lacks |
 | `malloc_usable_size`, `sigev_notify_function`, `ENODATA` | **OpenOrbis/musl** | three names missing from headers that ship; each is one line |
@@ -440,27 +590,62 @@ console; that is the bar.
 
 * ⚠ **Nothing here is committed anywhere but this repository.** The four forks it serves still carry
   their side of the wiring as uncommitted changes.
-* No licence header survey beyond this repository's own: everything here is MIT except
-  `include/sys/ioccom.h`, whose macros follow FreeBSD's (BSD-3-Clause) because they encode an ABI.
+* ⚠ **This repository is not uniformly MIT, and said it was until 2026-09-17.** Two files are not:
+  `include/sys/ioccom.h`, whose macros follow FreeBSD's (BSD-3-Clause) because they encode an ABI,
+  and `cmake/orbis-tls.ld`, which is the OpenOrbis SDK's own `link.x` (v0.5.4, asset
+  `toolchain-llvm-18.tar.gz`) with two match patterns added - the toolchain is **GPL-3.0 with no
+  linking exception**, so that file is `GPL-3.0-only` and carried an MIT header it had no right to.
+  Its own comment records the provenance. Everything else here is MIT, and `LICENSE` now says so
+  with those two named. The licence survey went no further than this repository and the SDK tree it
+  derives from: every other tracked file was diffed against the same-named file under the SDK and
+  none of them is a copy (the largest verbatim overlap outside `orbis-tls.ld` is 12 lines of musl's
+  `__NEED_`/`__DEFINED_` guard idiom in `include/bits/alltypes.h`).
 * One GPU stall survives a working run - one submit in ~1200, fence stuck for four submissions, every
   address mapped. **Pre-existing**, not introduced here.
-* No CI. `./build.sh` is the whole of it, and it has to be run by hand.
+* CI exists now and covers one thing only: `.github/workflows/sdk-bundle.yml` cuts and verifies
+  the redistributable bundle. `./build.sh` is still the whole of the overlay's own checking and is
+  still run by hand. ⚠ And the bundle's publication gate has run exactly once, on macOS - every
+  finding it made on that run is recorded in the scripts it made them about.
 
 ## 9. Traps this cost
 
 1. ⚠ **The package goes to `/data/pkg`, not `/data`.** Uploaded to the wrong place, the console starts
    the previously installed build and logs nothing new. **A missing answer is indistinguishable from
    an answer.**
-2. ⚠ **`build.sh` copies `shims/` into `~/.cache/orbis-mesa/cross/include`.** Editing the source and
-   running `ninja` directly compiles the old copy.
+2. ⚠ **WITHDRAWN, 2026-09-17: there is no `shims/` any more.** It said `build.sh` copies `shims/`
+   into `~/.cache/orbis-mesa/cross/include`, so editing the source and running `ninja` compiled the
+   old copy. Those seven headers moved into this repository and `mesa-ps4/build-support/orbis/build.sh`
+   says so at line 68 - *"The seven headers that used to be copied from ${ROOT}/shims are GONE FROM
+   THIS TREE"*. The directory does not exist. The general shape survives as trap 7.
 3. ⚠ **`meson setup` by hand loses what build.sh sets.** `PKG_CONFIG_PATH=` and `PKG_CONFIG_LIBDIR=`
    pointing at an empty directory are what stop nix's devShell supplying the HOST's libelf.
 4. ⚠ **The build date does not identify a package.** `build.sh` runs meson through `nix develop`,
    which sets `SOURCE_DATE_EPOCH=315532800`, so every driver it builds reports
    `arm built Jan 1 1980 00:00:00`. Use `-Dradv-build-id=<string>`.
-5. ⚠ **The port's env file is configuration, not options.** `ORBIS_3D_LINEAR=1` and `ORBIS_NO_TESS=1`
-   are OFF in the driver by default and the console's env file is the only thing that turns them on.
-   Cutting it down to "what this run needs" makes the title crash entering 3D.
+5. ⚠ **This trap is WITHDRAWN, and it was wrong in the direction that matters for anyone who is
+   handed a package.** It used to say that `ORBIS_3D_LINEAR=1` and `ORBIS_NO_TESS=1` are off in the
+   driver by default, that the console's env file is the only thing that turns them on, and that a
+   run without it crashes entering 3D. That was true once. The defaults were moved INTO the driver
+   and the entry was not updated. Read off `mesa-ps4` on 2026-09-17:
+
+   ```c
+   /* ac_surface.c, under HAVE_ORBIS_PLATFORM */
+   const bool off = linear3d != NULL && linear3d[0] == '0' && linear3d[1] == '\0';
+   if (!off) { mode = RADEON_SURF_MODE_LINEAR_ALIGNED; ... }
+   ```
+
+   Unset means `off` is false, so linear IS applied; `ORBIS_NO_TESS` reads the same way round.
+   `OpenGothic/ps4/tempest-env.example.txt` has said so for a while - *"A NORMAL RUN NEEDS NO FILE AT
+   ALL. The driver ships the configuration it was tested in"* - and `ac_surface.c`'s own comment gives
+   the reason: *"Anyone who downloads this driver gets the configuration it was tested in."*
+
+   **So a package runs on a console with no env file, which is the only thing a stranger who
+   downloaded a release can have.** The file turns a diagnostic ON or a default OFF, for one run.
+
+   The trap worth keeping is the opposite one, and it is in that example file rather than here: a
+   knob LEFT BEHIND applies to every later run, including a different title's - a watermark left in
+   on 2026-09-01 froze RetroArch's menu for 1.5 s every 768 frames. Take a knob out when its run is
+   done.
 6. ⚠ **`git checkout -- <file>` on an uncommitted file destroys it**, with no stash, no reflog and no
    dangling blob. 209 lines of OpenGothic's CMakeLists went that way and had to be reconstructed.
 7. ⚠ **A stale build directory answers questions about a build that no longer exists.**

@@ -9,7 +9,9 @@ sideways. An idea that is not on this list goes to §Parking, not into the tree.
 
 An item is finished when its **Done when** line is true. Not before, and not "mostly".
 
-Status: **1-5, 7 and 9 done. 6 (CI) deferred by the maintainer; 8 has no date.**
+Status, 2026-09-17: **1-5, 7 and 9 done. 6 partly done - CI exists for the bundle and not for
+`build.sh`. 8 has no date, and upstream has moved underneath it; see the note on that item.**
+Items 10-12 are new, and every one of them was found by running something rather than reading it.
 
 ---
 
@@ -287,6 +289,20 @@ OpenOrbis toolchain, which is the only interesting part of describing the job.
 
 **Done when:** a push runs build.sh and its checks, and a broken header fails the run.
 
+## PARTLY DONE, 2026-09-17 — and the half that exists is the other half
+
+`.github/workflows/sdk-bundle.yml` cuts a redistributable bundle and runs the offline verify and
+the publication gate over it. That is real CI and it is **not** what this item asked for: nothing
+runs `./build.sh` on a push, so a broken header still reaches a person rather than a red build.
+
+⚠ The gate found six defects on its first real run, all in the scripts that check a bundle rather
+than in a bundle - a `sed 's/^_//'` that truncated every C++ symbol name, a dirty-tree refusal that
+deadlocked the gate against itself, a CMake guard placed above `project()` where it could only ever
+fire, an archive force-loaded twice, a `grep -q` under `set -o pipefail` that reported the overlay
+absent from an image containing 16 of its symbols, and a port build sharing a cache between runs.
+Each is recorded where it was found. **What remains for this item is the cheap half**: one job that
+runs `./build.sh`.
+
 ---
 
 ## 7. Retire the `__mmap` binding question
@@ -333,6 +349,30 @@ The point of this repository is to shrink. §7 of the README maps every item to 
 
 ⚠ **Anything sent upstream has to be measured, not inferred.** Every number in README §2 and §6 came
 off the console; that is the bar, and it is the reason these are worth their maintainers' time.
+
+## ⚠ UPSTREAM HAS MOVED UNDERNEATH THIS ITEM, 2026-09-17
+
+Three things were true when this list was written and are not now. None of them is a reason to drop
+the item; all three change who to send what, and to whom.
+
+* **The `mode_t` diagnosis landed without us.** OpenOrbis/OpenOrbis-PS4-Toolchain PR #278
+  (red-prig, merged 2025-07-21) narrows `OrbisKernelMode` to `uint16_t`, and PLAN §3's field table
+  matches the result field for field. It corrects only the Orbis-namespaced type, so `stat()` still
+  reads the wrong layout and the interposer stays - but the argument for it no longer has to be
+  made. ⚠ And it is in the v0.5.4 **tag** only: the published **asset** is the v0.5.3 tree, so
+  everyone who pins the asset, which is everyone, does not have it.
+* **OpenOrbis/musl PR #35 is open, unreviewed, and lands on §1 and §6.3.** It rewrites `__wait.c`
+  onto libkernel's `_umtx_op` - the arm README §6.3 measured as 15-tests-aborted against 49/49 for
+  ours - and its author wrote *"I didn't try rebuilding libc++"* and asked for someone to verify the
+  definitions. That is an invitation, addressed to the only person who has the measurements.
+* **The toolchain is being replaced.** Its maintainer has said since 2024-12 that a BSD libc +
+  latest LLVM toolchain is in progress, privately (issue #262). Patches against the musl tree are
+  patches against a tree with a successor. ⚠ Nothing public shows the new one; the only artefact is
+  `kiwidoggie/llvm-project` @ `release/19.x`, last pushed 2025-07-28.
+
+**What this changes:** item 1 of the list above (the seven broken headers) is still worth sending as
+written. Everything touching musl should be a question first - on their Discord, where the offer of
+access was made - rather than a PR against a tree nobody upstream is building on any more.
 
 ---
 
@@ -401,6 +441,50 @@ timer in the port is defensible.
 ⚠ **AND THE PROBE'S FIRST VERDICT WAS WRONG.** It said the CTS patch could go after one shot. dEQP's
 deTimer.c is a PERIODIC watchdog; repeating is a different code path. The interval control was added
 before anything was deleted, and only then did the patch go.
+
+---
+
+## 10. The env-file list names its consumers, and cannot keep doing that
+
+`src/orbis_env.cpp` reads `/data/orbis-env.txt` and then three paths belonging to named products.
+The file's own header calls it *"a seam rather than a design"* and it is right. The constraint
+underneath is real and is not going away: `setenv()` in one image is invisible to another here,
+because the SDK's `libc.a` is a real static musl and every `.prx` links its own `environ` - measured
+2026-08-23, `ORBIS_NCPU=1` applied to the eboot and never reached the core.
+
+So a well-known path is the only channel between images; an `orbis_env_add_file()` API cannot work,
+because nobody calls it inside a module before its first read. `/data/orbis-env.txt` (added
+2026-09-17) is that path.
+
+**Done when:** the three product paths are gone, because Tempest and RetroArch write the generic one.
+Until then they stay for compatibility and are marked as such.
+
+## 11. `ORBIS_*` knobs that could not be set on a console
+
+⚠ **Two of this overlay's three switches read `getenv` and not `orbis_env_get`, so the A/B method
+every measurement in the README depends on worked only on the laptop.** Found 2026-09-17 while
+trying to bisect a crash; both now go through the file-aware path. `ORBIS_INTERNAL_MEM_PROBE` always
+did, which is why nobody noticed.
+
+**Done when:** a check fails if a new `getenv("ORBIS_...")` appears in `src/`. The failure mode is
+silent by construction - a switch that cannot be thrown looks exactly like a switch with no effect.
+
+## 12. `crtlib.o`, and the one licence question left
+
+`crt/` is an MIT C runtime and `ORBIS_CRT` selects it. The reason it exists shrank on inspection:
+`crt1.o`, `crti.o`, `crtn.o` and `crt_dyn.o` are built from `OpenOrbis/musl` (`crt/ps4/crt1.c`,
+`arch/ps4/crt_arch.h`), which is **MIT** - so they were never the problem. Only `crtlib.o`, from the
+toolchain repository's `src/crt/crtlib.c`, is GPL-3.0 with no per-file header and no linking
+exception, and it reaches only `.prx` modules.
+
+⚠ **And ours fixes a real defect, not just a licence one**: the SDK's `crtlib.o` resolves
+`__init_array_start`/`__init_array_end` into its own `.bss` - measured on a linked module,
+`0xc030`/`0xc038` inside `.bss` against a real `.init_array` at `0x4000` - so `module_start` walks
+one zeroed entry and calls through NULL. Static constructors in a `.prx` never run. Cause: tentative
+definitions that were COMMON under `-fcommon` and are ordinary objects under clang 18.
+
+**Done when:** OpenOrbis answers whether `src/crt/crtlib.c` was meant to be GPL-3.0 and whether they
+would add a linking exception. One message. The `.init_array` defect should be sent either way.
 
 ---
 
