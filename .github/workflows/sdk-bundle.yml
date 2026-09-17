@@ -1,0 +1,232 @@
+# Cut, verify and gate ONE orbis-sdk bundle. It does NOT publish.
+#
+# ⚠ THIS WORKFLOW HAS NEVER RUN. It was written on a host without ld.lld, llvm-ar, llvm-ranlib
+# or llvm-nm, so `./build.sh` cannot execute there and neither can the gate. Everything below
+# is reasoned from the scripts it drives. Expect the first run to find something; the most
+# likely place is the `bundle-gate` job's port stage, for the reason that script's own comment
+# gives about orbis-env.sh clearing ORBIS_MESA_BUILD.
+#
+# ⚠ NO RELEASE STEP, DELIBERATELY. Cutting and publishing are separate acts because the
+# publication gate sits between them, and a workflow that did both would make it possible to
+# skip the gate by accident. The artifact this uploads is what a maintainer inspects and then
+# publishes by hand once `gate=pass` is in its BUNDLE.txt.
+#
+# ⚠ IT DOES NOT BUILD MESA. Mesa is a three-hour build with a nix closure behind it and it is
+# already a release in orbis-ports/mesa-ps4. What this workflow does instead is REFUSE any
+# Mesa bundle whose manifest says it was built against a different orbis-compat than the one
+# being bundled - which is the whole point, and is checked twice: once by make-sdk-bundle.sh
+# before staging and once by verify-sdk-bundle.sh against what was staged.
+name: orbis-sdk bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Bundle version, e.g. v1. Goes in the name and in BUNDLE.txt.
+        required: true
+      mesa-release:
+        description: >-
+          Release tag in orbis-ports/mesa-ps4 whose orbis-mesa-<sha>.tar.gz to consume.
+          Its manifest MUST say orbis-compat-commit=<this checkout's HEAD>.
+        required: true
+      sdk-tag:
+        description: OpenOrbis-PS4-Toolchain release tag.
+        required: false
+        default: v0.5.4
+  pull_request:
+    paths:
+      - 'scripts/release/**'
+      - 'licenses/**'
+      - 'NOTICE.md'
+      - 'LICENSING.md'
+      - '.github/workflows/sdk-bundle.yml'
+
+permissions:
+  contents: read
+
+env:
+  OPENORBIS_SDK_REPO: OpenOrbis/OpenOrbis-PS4-Toolchain
+  OPENORBIS_SDK_ASSET: toolchain-llvm-18.tar.gz
+
+jobs:
+  # ---------------------------------------------------------------------------------------
+  # The cheap half. Runs on every pull request that touches the ledger, needs no SDK, no
+  # network and no toolchain - which is the property that makes it worth running every time.
+  # ---------------------------------------------------------------------------------------
+  licences:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The licence ledger verifies, offline
+        run: ./scripts/release/sdk-licenses.sh verify
+      - name: NOTICE.md regenerates identically
+        # Belt and braces: `verify` already compares against gen_notice, but doing it as a
+        # visible diff means a reviewer sees WHAT drifted rather than only that something did.
+        run: |
+          set -euo pipefail
+          cp NOTICE.md /tmp/NOTICE.committed
+          ./scripts/release/sdk-licenses.sh notice
+          diff -u /tmp/NOTICE.committed NOTICE.md && echo "== NOTICE.md is current"
+      - name: The pins still resolve upstream
+        # ⚠ NON-FATAL ON PURPOSE, and the two failures it can report mean opposite things.
+        # Exit 3 is UPSTREAM MOVED - a pin that was supposed to be immutable is not, which is
+        # a finding about the source and not about this repository. Exit 4 is INCOMPLETE - a
+        # host was unreachable, which is a finding about the network and nothing else.
+        # Neither should red-X a pull request that did not cause it; both must be visible.
+        continue-on-error: true
+        run: ./scripts/release/sdk-licenses.sh verify --upstream
+
+  # ---------------------------------------------------------------------------------------
+  # The real cut. workflow_dispatch only: it needs a Mesa release tag that a human chose.
+  # ---------------------------------------------------------------------------------------
+  bundle:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host tools
+        # Named individually because "install llvm" is not a diagnosis. ld.lld is the linker
+        # the target needs; llvm-ar/llvm-ranlib build the archive; llvm-nm is what the import
+        # assertion is made of.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 clang lld llvm cmake
+          for t in clang clang++ ld.lld llvm-ar llvm-ranlib llvm-nm cmake; do
+            command -v "$t" >/dev/null || { echo "!! $t still missing after install" >&2; exit 1; }
+          done
+          clang --version | head -1
+
+      - name: Restore the OpenOrbis SDK
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/opt/openorbis
+          key: openorbis-${{ inputs.sdk-tag }}
+
+      - name: Fetch the OpenOrbis SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          gh release download "${{ inputs.sdk-tag }}" --repo "$OPENORBIS_SDK_REPO" \
+             --pattern "$OPENORBIS_SDK_ASSET" --dir "$tmp"
+          asset="$(find "$tmp" -maxdepth 1 -type f | head -1)"
+          [ -n "$asset" ] || { echo "!! no asset matching '$OPENORBIS_SDK_ASSET'" >&2; exit 1; }
+          mkdir -p "$tmp/x"; tar -xzf "$asset" -C "$tmp/x"
+          # ⚠ Re-root on link.x rather than stripping a fixed number of components: the tarball
+          # nests everything under OpenOrbis/PS4Toolchain/ today and a future asset that
+          # flattens the layout must still land correctly. Same reasoning as the composite
+          # action in the sibling repositories.
+          root="$(dirname "$(find "$tmp/x" -name link.x -print -quit)")"
+          [ -n "$root" ] && [ "$root" != "." ] || { echo "!! no link.x anywhere in the asset" >&2; exit 1; }
+          dest="$HOME/.local/opt/openorbis"; rm -rf "$dest"; mkdir -p "$dest"
+          cp -a "$root"/. "$dest"/
+          chmod +x "$dest"/bin/linux/* 2>/dev/null || true
+
+      - name: The SDK is an SDK, not a source stash
+        run: |
+          set -euo pipefail
+          # link.x AND lib/libc.a. A checkout of the toolchain repository has the first and not
+          # the second, and a toolchain that is present but missing its linker script fails
+          # hundreds of files later with an error that names nothing useful.
+          tc="$HOME/.local/opt/openorbis"
+          for f in link.x lib/libc.a lib/crt1.o include/stdlib.h bin/linux/create-fself; do
+            [ -e "$tc/$f" ] || { echo "!! SDK at $tc is missing $f" >&2; exit 1; }
+          done
+          echo "OO_PS4_TOOLCHAIN=$tc" >> "$GITHUB_ENV"
+
+      - name: Build orbis-compat
+        # ⚠ NOT --no-check. ./build.sh is the build AND its own checks, two of which must FAIL
+        # without the overlay and one of which it compiles and runs natively. A silently wrong
+        # overlay is precisely what a bundle would then distribute to strangers.
+        run: ./build.sh
+
+      - name: Fetch the Mesa bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/mesa"; rm -rf "$dest"; mkdir -p "$dest"
+          tmp="$(mktemp -d)"
+          gh release download "${{ inputs.mesa-release }}" --repo orbis-ports/mesa-ps4 \
+             --pattern 'orbis-mesa-*.tar.gz' --dir "$tmp"
+          # ⚠ ONE ASSET, NEVER TWO. If a release grows a second tarball, stop rather than
+          # picking one: two assets are exactly the archives/headers pairing that the
+          # mismatched-vulkan_core.h warning is about.
+          n="$(find "$tmp" -maxdepth 1 -name 'orbis-mesa-*.tar.gz' | wc -l)"
+          [ "$n" -eq 1 ] || { echo "!! $n orbis-mesa tarballs in that release; expected exactly one" >&2; exit 1; }
+          tar -xzf "$(find "$tmp" -maxdepth 1 -name 'orbis-mesa-*.tar.gz')" -C "$dest"
+          root="$(dirname "$(find "$dest" -maxdepth 2 -name manifest.txt -print -quit)")"
+          [ -n "$root" ] || { echo "!! the bundle has no manifest.txt - it cannot name its own parents" >&2; exit 1; }
+          echo "MESA_BUNDLE=$root" >> "$GITHUB_ENV"
+          sed -n '/^\[orbis-compat-imports\]/q;p' "$root/manifest.txt" | sed 's/^/   /'
+
+      - name: The licence ledger, before anything is staged
+        run: ./scripts/release/sdk-licenses.sh verify
+
+      - name: Cut the bundle
+        # No --allow-pair-mismatch and no --allow-dirty. A CI run has no business overriding
+        # either: the first would ship a driver compiled against headers it does not link
+        # against, the second would ship a bundle whose recorded commit does not describe its
+        # bytes. Both are the failures this workflow exists to make impossible.
+        run: |
+          set -euo pipefail
+          ./scripts/release/make-sdk-bundle.sh \
+            --version "${{ inputs.version }}" \
+            --mesa "$MESA_BUNDLE" \
+            --out "$RUNNER_TEMP" \
+            --bin-hosts linux,macos
+          echo "TARBALL=$RUNNER_TEMP/release/orbis-sdk-${{ inputs.version }}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Verify what was cut, offline
+        # ⚠ EXIT 4 IS EXPECTED HERE AND IS NOT A PASS. The bundle says gate=unproven because
+        # nothing has been built from it yet, and verify reports INCOMPLETE for exactly that.
+        # Exit 1 is a real failure and stops the job.
+        run: |
+          set -euo pipefail
+          rc=0; ./scripts/release/verify-sdk-bundle.sh "$TARBALL" || rc=$?
+          case "$rc" in
+            0) echo "== verify OK" ;;
+            4) echo "== verify INCOMPLETE (expected: gate=unproven). Continuing to the gate." ;;
+            *) echo "!! verify FAILED (rc=$rc)" >&2; exit 1 ;;
+          esac
+
+      - name: THE PUBLICATION GATE - hello-world and a real port, from the unpacked bundle
+        # ⚠ THE STEP THAT HAS NEVER RUN. It unpacks the tarball into a fresh tree, scrubs every
+        # variable that could reach back to this runner's own SDK/overlay/Mesa, builds
+        # hello-world, and then GREPS the generated link.txt to prove that nothing on the link
+        # line came from outside the bundle. README §9 trap 7 is the failure it exists to catch:
+        # "A stale build directory answers questions about a build that no longer exists."
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/orbis-ports/OpenGothic "$RUNNER_TEMP/OpenGothic" \
+            || { echo "!! could not clone the port; the gate needs one" >&2; exit 1; }
+          ./scripts/release/bundle-gate.sh "$TARBALL" --port "$RUNNER_TEMP/OpenGothic" --keep
+
+      - name: Re-cut with the gate recorded
+        # bundle-gate.sh stamps the UNPACKED copy, which necessarily breaks that copy's line in
+        # SHA256SUMS - a gate result is new information about the bundle, so the bundle is a new
+        # artifact rather than a patched one. This is the tarball that gets published.
+        run: |
+          set -euo pipefail
+          ORBIS_BUNDLE_GATE=pass ./scripts/release/make-sdk-bundle.sh \
+            --version "${{ inputs.version }}" \
+            --mesa "$MESA_BUNDLE" \
+            --out "$RUNNER_TEMP" \
+            --bin-hosts linux,macos
+          # This one must be a clean OK. Not INCOMPLETE, not a warning.
+          ./scripts/release/verify-sdk-bundle.sh "$TARBALL"
+          echo "== $TARBALL is publishable"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orbis-sdk-${{ inputs.version }}
+          path: |
+            ${{ env.TARBALL }}
+            ${{ env.TARBALL }}.sha256
+          if-no-files-found: error
