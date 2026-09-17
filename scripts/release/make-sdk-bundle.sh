@@ -145,7 +145,40 @@ printf '   %-26s %s\n' "Mesa link probe"      "${MESA_LINKPROBE:-unrecorded}"
 #    in kind from the four env vars it replaces.
 # -----------------------------------------------------------------------------------------
 PAIR=ok
-if [ "$MESA_BUILT_AGAINST" != "$COMPAT_SHA" ]; then
+# ⚠ WHAT MESA COMPILES AGAINST IS include/, AND THIS USED TO COMPARE COMMIT IDS. Any commit to
+# this repository invalidated the pair - a typo fixed in a README, a comment rewritten, a change
+# to THIS SCRIPT - because the test was sha equality rather than anything Mesa can observe.
+#
+# Measured 2026-09-17: a bundle was refused over cc75949..4f61d6f, three commits touching
+# LICENSING.md, build.sh, crt/orbis_crt1.c and make-sdk-bundle.sh. `git diff -- include/` across
+# that range is EMPTY. Under the old rule a release meant freezing this repository, rebuilding
+# Mesa, and cutting the bundle with not one commit in between - which is not a process anybody
+# would follow twice.
+#
+# So: the shas are still recorded, and they are still what BUNDLE.txt reports, because provenance
+# is worth having. What REFUSES is a difference in include/.
+#
+# ⚠ AND WHEN THE COMPARISON CANNOT BE MADE, THE OLD RULE STILL APPLIES. A shallow clone resolves
+# the old commit object without its tree, so there is nothing to diff; refusing on the sha is then
+# the honest answer, and the message says which case it is. The workflow fetches full history so
+# that this is the rare path rather than the normal one.
+HEADERS_DIFFER=unknown
+if [ "$MESA_BUILT_AGAINST" = "$COMPAT_SHA" ]; then
+  HEADERS_DIFFER=no
+elif git -C "$COMPAT" cat-file -e "${MESA_BUILT_AGAINST}^{tree}" 2>/dev/null; then
+  if git -C "$COMPAT" diff --quiet "$MESA_BUILT_AGAINST" "$COMPAT_SHA" -- include/ 2>/dev/null; then
+    HEADERS_DIFFER=no
+  else
+    HEADERS_DIFFER=yes
+  fi
+fi
+
+if [ "$HEADERS_DIFFER" = no ] && [ "$MESA_BUILT_AGAINST" != "$COMPAT_SHA" ]; then
+  warn "Mesa was built against orbis-compat ${MESA_BUILT_AGAINST:0:12}, this bundle ships ${COMPAT_SHA:0:12}"
+  ok   "include/ is identical across those commits - the pair is coherent"
+fi
+
+if [ "$HEADERS_DIFFER" != no ]; then
   PAIR="MISMATCH"
   warn "Mesa was built against orbis-compat ${MESA_BUILT_AGAINST:0:12}"
   warn "this bundle would ship orbis-compat   ${COMPAT_SHA:0:12}"
@@ -164,6 +197,10 @@ if [ "$MESA_BUILT_AGAINST" != "$COMPAT_SHA" ]; then
   else
     warn "between them: cannot say - ${MESA_BUILT_AGAINST:0:12} is not reachable in this checkout"
     warn "  (a shallow clone resolves the object but not its ancestry; git fetch --unshallow to see)"
+  fi
+  if [ "$HEADERS_DIFFER" = unknown ]; then
+    warn "include/ could not be compared - ${MESA_BUILT_AGAINST:0:12} has no tree in this clone."
+    warn "  Refusing on the commit id, which is the old and stricter rule. git fetch --unshallow."
   fi
   [ "$ALLOW_MISMATCH" -eq 1 ] || die \
 "REFUSED. Mesa compiled against one set of headers and would link against a different

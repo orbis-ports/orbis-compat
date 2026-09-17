@@ -85,6 +85,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          # full history: the pairing check diffs include/ against the commit Mesa was built
+          # against, and a shallow clone has the object without its tree.
+          fetch-depth: 0
 
       - name: Host tools
         # Named individually because "install llvm" is not a diagnosis. ld.lld is the linker
