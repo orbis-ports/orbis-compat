@@ -175,7 +175,7 @@ fi
 
 if [ "$HEADERS_DIFFER" = no ] && [ "$MESA_BUILT_AGAINST" != "$COMPAT_SHA" ]; then
   warn "Mesa was built against orbis-compat ${MESA_BUILT_AGAINST:0:12}, this bundle ships ${COMPAT_SHA:0:12}"
-  ok   "include/ is identical across those commits - the pair is coherent"
+  log  "include/ is identical across those commits - the pair is coherent"
 fi
 
 if [ "$HEADERS_DIFFER" != no ]; then
