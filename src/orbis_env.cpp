@@ -117,6 +117,18 @@ void load_once() {
   if (g_loaded)
     return;
   g_loaded = true;
+  // ⚠ A GENERIC FILE FIRST, BECAUSE THE LIST BELOW ONLY KNOWS THREE CONSUMERS BY NAME. Every
+  // switch this overlay has - ORBIS_THREAD_STACK, ORBIS_SIGEV_THREAD, ORBIS_UMTX_LIBKERNEL - is
+  // meant to be flipped on a console without rebuilding, and that is how every measurement in the
+  // README was made. A consumer this file has never heard of could not do it at all: it would read
+  // three paths belonging to other programs and find nothing.
+  //
+  // Found by running the bundle's own hello example on hardware, 2026-09-17. It crashed with
+  // SIGSYS inside pthread_create and there was no way to turn the thread interposer off to see
+  // whose fault it was - the one question an A/B answers in one run.
+  //
+  // First, so a program with a file of its own still overrides this one.
+  load_file("/data/orbis-env.txt");
   load_file("/data/tempest-env.txt");
   load_file("/data/retroarch-env.txt");
   // ⚠ THE DESKTOP-GL EBOOT HAS A FILE OF ITS OWN, and this list not knowing about it was worth a

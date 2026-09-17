@@ -25,6 +25,7 @@
 //
 // - a non-thread timer_t IS the kernel id, sign bit clear. Ours are pointers into a static table,
 // which the range check below distinguishes without guessing, and which never reach musl anyway.
+#include <orbis_env.h>
 #include <orbis_timer.h>
 
 #include <orbis_log.h>
@@ -97,7 +98,11 @@ pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 std::atomic<unsigned long> g_fired{0};
 
 bool enabled() {
-  const char* e = getenv("ORBIS_SIGEV_THREAD");
+  // ⚠ orbis_env_get, NOT getenv - see the same change in orbis_thread.cpp. setenv() in one image
+  // is invisible to another on this console, so a standalone eboot's environ never carries ORBIS_*
+  // and this switch could not be thrown on hardware at all. orbis_env_get checks the real
+  // environment first, so a laptop run behaves exactly as before.
+  const char* e = orbis_env_get("ORBIS_SIGEV_THREAD");
   return !(e!=nullptr && e[0]=='0');
   }
 

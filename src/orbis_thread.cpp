@@ -5,6 +5,7 @@
 
 #include <orbis_log.h>
 #include <orbis_mem.h>
+#include <orbis_env.h>
 
 #include <execinfo.h>
 #include <pthread.h>
@@ -111,7 +112,20 @@ size_t resolveFloor() {
   if(v!=~size_t(0))
     return v;
 
-  const char* e = getenv("ORBIS_THREAD_STACK");
+  // ⚠ orbis_env_get, NOT getenv, AND THE DIFFERENCE IS WHETHER THIS KNOB CAN BE SET AT ALL. On
+  // this console setenv() in one image is invisible to another, so a standalone eboot's environ
+  // is whatever the loader gave it and nothing writes ORBIS_* into it. getenv therefore answers
+  // null on every console run, and the switch that the README's own A/B method depends on could
+  // only ever be exercised on the laptop.
+  //
+  // Found 2026-09-17 trying to A/B this very interposer after the bundle's hello crashed with
+  // SIGSYS inside pthread_create: the env file was uploaded, read by the overlay, and this line
+  // never looked at it. orbis_env_get answers from the process environment FIRST, so anything
+  // genuinely set still wins and nothing about a laptop run changes.
+  //
+  // Safe here because resolveFloor() is lazy - first pthread_create, not static init - so libc
+  // is up and orbis_env_get may open a file. Do not move this to a constructor.
+  const char* e = orbis_env_get("ORBIS_THREAD_STACK");
   if(e!=nullptr) {
     const long kib = strtol(e,nullptr,10);
     v = (kib>0) ? size_t(kib)*1024 : 0;
