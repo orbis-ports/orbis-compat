@@ -6,9 +6,9 @@ that `scripts/release/sdk-licenses.sh verify` refuses to let go stale. This file
 maintained by hand, the way `~/src/unemu-org/oracles/MANIFEST.md` is; `NOTICE.md` is generated
 from the table in `sdk-licenses.sh`, the way that repository's `NOTICE.md` is.
 
-**Read §5 before treating any of this as settled.** One component has no licence at all, one
-ships without the source its licence asks for, and two have pins that are near enough rather
-than exact. A fourth entry there is a mistake this ledger made and corrected; it is kept.
+**Read §5 before treating any of this as settled.** One component has two readings and nobody has
+asked its author which is his, one ships without the source its licence asks for, and two have
+pins that are near enough rather than exact. A fourth entry there is a mistake this ledger made and corrected; it is kept.
 
 ---
 
@@ -334,7 +334,7 @@ UPSTREAM MOVED — the pin is supposed to be immutable, so that is itself a find
 These four are the reason this file is worth reading. None of them is fixed by the machinery;
 all four are recorded so that a reader knows where the ledger stops.
 
-### 5.1 `sdk/lib/*.so` — no licence exists to comply with
+### 5.1 `sdk/lib/*.so` — two readings, and nobody has been asked which is theirs
 
 422 generated import libraries, empty by construction (§2.4). Their generator
 (`OpenOrbis/orbis-lib-gen`) and their input data (`OpenOrbis/ps4libdoc`) are **both archived
@@ -342,11 +342,28 @@ with no `LICENSE` file of any kind**. There is no grant to quote, so there is no
 ship, so there is nothing `verify` can check. A bundle containing them is shipping files whose
 redistribution terms nobody has stated.
 
-**This is the single strongest argument for not publishing a bundle at all**, and it is put
-here rather than buried. Three things would change it, in decreasing order of realism: ask
-OpenOrbis to put a licence on `ps4libdoc`; regenerate the stubs from a source whose terms are
-known; or ship the bundle without `lib/*.so` and have the consumer fetch the SDK for them —
-which is most of what the bundle exists to avoid. **Nobody has been asked.**
+⚠ **AND THAT IS ONE OF TWO CHAINS, WHICH THIS SECTION USED TO PRESENT AS THE ONLY ONE.** The
+stubs reach us as part of an `OpenOrbis-PS4-Toolchain` RELEASE, and that repository is GPL-3.0
+with no per-file headers — the same reasoning that settles `crtlib.c` in §5.2. Read that way
+they are licensed, under GPL-3.0, like everything else in that tree without a header of its own.
+
+The two chains disagree because `lib/` is EMPTY in the git repository — it holds one README
+saying "Generated library stubs will go in this directory" — so the stubs exist only in the
+release asset. Whether a repository's LICENSE reaches an artifact published from its Releases
+page, when that artifact is generated from a differently-(un)licensed input, is the actual
+question, and it is a question about OpenOrbis's own terms rather than about Sony's.
+
+**Sony's rights are not what is at issue here, and saying "Sony's modules" invites that reading.**
+These files contain no Sony code: `libkernel.so` is 945 symbols in 9812 bytes of `.text`, ten
+bytes per function, measured (§2.4). What they carry is names and NIDs. They are also LINK-time,
+so an eboot built with them carries imports rather than their bytes — which means that even on
+the GPL-3.0 reading, nothing about them reaches a user's binary.
+
+**What remains worth doing**, in decreasing order of realism: ask OpenOrbis which reading is
+theirs — one message, and it settles both this and `crtlib.c`; ask them to put a licence on
+`ps4libdoc`; regenerate the stubs from a source whose terms are known; or ship the bundle
+without `lib/*.so` and have the consumer fetch the SDK for them, which is most of what the
+bundle exists to avoid. **Nobody has been asked.**
 
 ### 5.2 ~~Six of the seven GPL-3.0 crt objects ship without corresponding source~~ — CLOSED
 
