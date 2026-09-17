@@ -81,7 +81,11 @@ echo "== ${OUT}/liborbis-compat.a"
 # They exist for one reason, and crt/orbis_crt1.c argues it at length: the SDK's lib/crt1.o and
 # lib/crtlib.o are the only objects that toolchain puts INSIDE a user's binary whose licence is not
 # settled, and crtlib.o's source is in a GPL-3.0 tree with no linking exception. Everything else the
-# SDK contributes to an eboot is musl, LLVM's runtimes or Sony's own modules; its GPL-3.0 tools -
+# SDK contributes to an eboot is musl or LLVM's runtimes. ⚠ Sony's own modules are NOT a fourth
+# settled item, which an earlier version of this line implied by listing them alongside: the
+# SDK's lib/*.so are stubs generated from two archived repositories that carry no LICENSE at
+# all (LICENSING.md 5.1). They are link-time, so an eboot carries their imports and not their
+# bytes - that is a statement about what travels, not about terms. Its GPL-3.0 tools -
 # create-fself, create-gp4, readoelf, PkgTool - run at build time and stay behind.
 #
 # What is built, and what deliberately is not:
