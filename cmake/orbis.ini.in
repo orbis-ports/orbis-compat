@@ -16,11 +16,39 @@
 #
 # Do not collapse those two into "Mesa's FreeBSD support carries this port". Thirteen of the port's last
 # fourteen build errors were the second one being true when it should not have been.
+# ⚠ THE COMPILER IS SUBSTITUTED, NOT HARDCODED, AND A nix devShell ON macOS IS WHY. build.sh runs
+# meson through `nix develop nixpkgs#mesa`, so a bare `clang` resolves to nix's cc-wrapper. On
+# x86_64-linux that wrapper is harmless. On aarch64-darwin it injects HOST flags into a cross
+# compile and says so itself:
+#
+#     Warning: supplying the --target x86_64-pc-freebsd12-elf != arm64-apple-darwin argument to a
+#     nix-wrapped compiler may not work correctly - cc-wrapper is currently not designed with
+#     multi-target compilers in mind. You may want to use an un-wrapped compiler instead.
+#
+# ⚠ AND IT IS NOT A WARNING, IT IS EVERY FEATURE PROBE. meson compiles its checks with
+# -Werror=unused-command-line-argument, and the wrapper adds -mmacos-version-min=15.0, which clang
+# cannot use for this triple:
+#
+#     clang: error: argument unused during compilation: '-mmacos-version-min=15.0'
+#            [-Werror,-Wunused-command-line-argument]
+#     Check usable header "endian.h" : NO
+#
+# 168 checks came back NO against 66 YES, so config.h lost HAVE_ENDIAN_H and most of its neighbours.
+# u_endian.h then fell past its <endian.h> arm into the FreeBSD one, reached for a
+# <machine/endian.h> that neither this overlay nor the SDK ships, and the build ended with 1107
+# failed targets and 2847 compile errors - none of which named the cause.
+#
+# @ORBIS_CC@ defaults to plain `clang`, so Linux CI is unchanged. Set ORBIS_CC/ORBIS_CXX to an
+# un-wrapped compiler - Homebrew's `/opt/homebrew/opt/llvm/bin/clang` - to build on a Mac.
+#
+# ar and strip come from the devShell and are fine there: they are not passed --target, so the
+# wrapper has nothing to mis-handle. They are substituted anyway, because a build that leaves the
+# devShell needs llvm-ar rather than Apple's ar, which cannot write an ELF archive.
 [binaries]
-c       = 'clang'
-cpp     = 'clang++'
-ar      = 'ar'
-strip   = 'strip'
+c       = '@ORBIS_CC@'
+cpp     = '@ORBIS_CXX@'
+ar      = '@ORBIS_AR@'
+strip   = '@ORBIS_STRIP@'
 pkg-config = 'pkg-config'
 # cmake is DELIBERATELY unavailable. meson's dependency() falls back to cmake package files when
 # pkg-config finds nothing, and nix's devShell carries cmake configs for HOST libraries - which is how
