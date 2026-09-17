@@ -208,8 +208,18 @@ jobs:
         # "A stale build directory answers questions about a build that no longer exists."
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/orbis-ports/OpenGothic "$RUNNER_TEMP/OpenGothic" \
+          # ⚠ --recursive, AND THE BRANCH BY NAME. OpenGothic's ps4/build.sh refuses without two
+          # forks present as submodules - "lib/Tempest has no Orbis SystemApi backend" - and a
+          # plain clone leaves them empty, so the gate's most expensive stage failed on a
+          # checkout problem rather than on anything about the bundle. Same message a person
+          # gets locally; .gitmodules already points at the forks and the ps4-support branches.
+          git clone --depth 1 --recursive --shallow-submodules \
+            --branch ps4-support https://github.com/orbis-ports/OpenGothic "$RUNNER_TEMP/OpenGothic" \
             || { echo "!! could not clone the port; the gate needs one" >&2; exit 1; }
+          for f in lib/Tempest/Engine/system/api/ps4api.h lib/ZenKit/include/zenkit/Vfs.hh; do
+            [ -f "$RUNNER_TEMP/OpenGothic/$f" ] || {
+              echo "!! the port's submodules did not check out: missing $f" >&2; exit 1; }
+          done
           ./scripts/release/bundle-gate.sh "$TARBALL" --port "$RUNNER_TEMP/OpenGothic" --keep
 
       - name: Re-cut with the gate recorded
