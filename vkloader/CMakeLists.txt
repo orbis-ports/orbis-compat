@@ -72,7 +72,32 @@ target_include_directories(ps4-vkloader PUBLIC "${ORBIS_MESA_SRC}/include")
 # -lSceVideoOut alongside -lSceGnmDriver: the driver's WSI arm opens video-out, registers the scan-out buffers and
 # flips, so it is a dependency of the ARCHIVE and not of any particular title. orbis-mesa's tools/linkprobe.sh
 # carries the same flag, which is what makes a missing one fail there instead of here.
+#
+# ⚠ AND zlib, WHICH THIS TARGET DID NOT CARRY UNTIL 2026-09-17. RADV's shader disk cache calls
+# deflate/inflate/crc32, so libvulkan_radeon.a imports them and every consumer of this loader has to
+# supply them. mesa-ps4's own tools/linkprobe.sh puts `"${BUILD}"/subprojects/zlib-*/libz.a` right
+# after the RADV archive for that reason; this target named SceGnmDriver and SceVideoOut on exactly
+# the same argument - "a dependency of the ARCHIVE and not of any particular title" - and then left
+# zlib out, so a new consumer met it as eight undefined symbols at its own final link:
+#
+#     ld.lld: error: undefined symbol: deflateInit_ / inflate / crc32 ...
+#       >>> referenced by compress.c in archive .../libvulkan_radeon.a
+#
+# Found by writing the bundle's triangle example, which is the first consumer of this loader that
+# was not already carrying zlib for reasons of its own.
+#
+# A glob rather than a name: the version is in the path, and both linkprobe.sh and the Mesa release
+# workflow find it the same way.
+file(GLOB ORBIS_ZLIB_ARCHIVE "${ORBIS_MESA_BUILD}/subprojects/zlib-*/libz.a")
+if(NOT ORBIS_ZLIB_ARCHIVE)
+  message(FATAL_ERROR
+    "no libz.a under ${ORBIS_MESA_BUILD}/subprojects/zlib-*/ - RADV imports deflate/inflate/crc32 "
+    "for its shader disk cache and the link will fail on them. It is built by Mesa's own meson "
+    "subproject, so a bundle or build tree missing it is incomplete.")
+endif()
+
 target_link_libraries(ps4-vkloader INTERFACE
   -Wl,--whole-archive "${RADV_ARCHIVE}" -Wl,--no-whole-archive
+  "${ORBIS_ZLIB_ARCHIVE}"
   -lSceGnmDriver
   -lSceVideoOut)
