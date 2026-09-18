@@ -558,10 +558,20 @@ trade a real safeguard for a tidy diagram.
    `give the jit code buffer a platform`), beetle-psx carries `orbis_lightrec_mem`, and Panda3DS,
    dynarmic and 3dsTrident are waiting in the org untouched. This is the largest single gap the
    ports have found, and it is not audio or input.
-5. the SDL2 orbis backend - video 888, joystick 534, audio 326 - lives inside sonic3air's vendored
-   SDL. `orbis-ports/SDL`'s `ps4-support` branch has ONE commit, about `sys/endian.h`. Most engines
-   a stranger arrives with are SDL2, so this is the widest lever in the whole plan and it is
-   currently sitting in a game.
+5. the SDL2 orbis backend - video 888, joystick 534, audio 326 - lives inside **sonic3air's
+   vendored SDL tree**, which is a plain directory rather than a submodule. Most engines a stranger
+   arrives with are SDL2, so this is the widest lever in the whole plan and it is currently sitting
+   in one game.
+
+   ⚠ **`orbis-ports/SDL` was not that lever and is archived as of 2026-09-18.** It held exactly one
+   commit ahead of upstream - d2f6ea6ff, `&& !defined(__ORBIS__)` on SDL_endian.h's FreeBSD arm -
+   and **nothing consumed it**: Panda3DS's submodule points at `libsdl-org/SDL`, and sonic3air
+   vendors an UNPATCHED copy that worked because of a private four-line `sys/endian.h` shim in its
+   own build directory. Three answers to one question, none aware of the others. `include/sys/endian.h`
+   here is the fourth and the last: it is a superset of the shim, the shim is deleted, and the patch
+   was never needed by anyone who had this header. Archived rather than deleted because the token
+   here cannot delete repositories - `gh auth refresh -h github.com -s delete_repo` first if that is
+   what you want.
 
 ⚠ **A kit is read by people who did not write it.** `cmake/orbis-tls.ld` is GPL-3.0-only with no
 linking exception and is on every consumer's link line; a linker script directs the linker rather
