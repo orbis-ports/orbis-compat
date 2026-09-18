@@ -459,6 +459,17 @@ because nobody calls it inside a module before its first read. `/data/orbis-env.
 **Done when:** the three product paths are gone, because Tempest and RetroArch write the generic one.
 Until then they stay for compatibility and are marked as such.
 
+**2026-09-18 - both products now read the generic name; the deletion waits on releases.** OpenGothic
+(`game/main.cpp`) and RetroArch (`frontend/drivers/platform_orbis.c`) both apply `/data/orbis-env.txt`
+FIRST and their own file after it, which keeps the frontend's order and `orbis_env.cpp`'s identical,
+and `OpenGothic/ps4/tempest-env*.txt` - the normative description of the format - now names the
+generic path as the destination. The three paths here are marked deprecated with that date. They can
+only go once a RELEASED package of each product carries the change: the operator's file sits on
+`/data`, no reinstall touches it, and dropping a read early turns an existing knob into a silent
+no-op - the same failure this section exists for. `/data/retroarch-glcore-env.txt` needs no release
+at all: the desktop-GL eboot is retired (RTRG00001 and `/data/retroarch-glcore/` are gone,
+`ps4/build-cores.sh`) and nothing in the RetroArch tree has written or read that path since.
+
 ## 11. `ORBIS_*` knobs that could not be set on a console
 
 ⚠ **Two of this overlay's three switches read `getenv` and not `orbis_env_get`, so the A/B method

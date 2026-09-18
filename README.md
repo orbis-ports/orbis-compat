@@ -143,7 +143,7 @@ for that reason and `optional/ps4_app.cpp` installs `ps4_idle_forever` for the s
 title from the PS button menu.
 
 ⚠ **No env file is needed for a normal run.** See §9.5 - a claim to the contrary lived in this file
-until 2026-09-17 and was wrong.
+until 2026-09-17 and was wrong. When a run *does* need one, the file is `/data/orbis-env.txt` - §3.3.
 
 ---
 
@@ -427,6 +427,34 @@ with `--whole-archive`, so a member arrives whether it was wanted or not. `ps4-a
 to carry `-lSceNet` and decides that a dying process idles rather than returns; the CTS and Mesa
 should not inherit either for having asked for a working `mmap`. `ps4-app` registers itself into
 `orbis_log.h`'s hooks, which is how `src/` gets a channel while knowing nothing about it.
+
+### 3.3 Setting a knob on a console: `/data/orbis-env.txt`
+
+Every `ORBIS_*` switch here is meant to be flipped without rebuilding, and on this console the only
+way to do that is a file. **`/data/orbis-env.txt` is that file** - `KEY=VALUE` per line, `#`
+comments, whitespace trimmed on both sides of the `=`. `src/orbis_env.cpp` reads it and
+`orbis_env_get()` answers out of it; the process environment still wins, so a value genuinely
+`setenv()`ed beats the file.
+
+⚠ **`setenv()` in one image is invisible to another here, which is why a file exists at all.** The
+SDK's `libc.a` is a real static musl - `getenv`/`setenv` are defined text, not stubs into a shared
+libc - so an executable and every `.prx` it loads each link their own `environ`. Measured
+2026-08-23: `ORBIS_NCPU=1` was applied by the frontend and never reached the core, which still
+reported five recompiler workers. A loadable module can only be reached through the file, and it
+must read the file *itself*, in its own image.
+
+⚠ **One name, because the reader cannot know who loaded it.** Three product paths -
+`/data/tempest-env.txt`, `/data/retroarch-env.txt`, `/data/retroarch-glcore-env.txt` - are still
+read after the generic one, so a per-product file overrides it. All three are **deprecated as of
+2026-09-18** and stay only for packages already flashed; they go once a released OpenGothic and a
+released RetroArch both write the generic name. Write the generic name.
+
+```
+lftp -p 2121 <console> -e "cd /data; put orbis-env.txt; bye"
+```
+
+`OpenGothic/ps4/tempest-env.example.txt` is the normative description of the format and of the
+driver knobs; it names `/data/orbis-env.txt` as the destination.
 
 ## 4. Layout
 

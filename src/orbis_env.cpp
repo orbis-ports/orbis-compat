@@ -33,6 +33,12 @@
 // the values it applied, and libretro has no channel for that. Until something better exists
 // the list mirrors exactly what RetroArch's own platform_orbis.c applies, in the same order,
 // so a module and its loader cannot disagree about what the operator asked for.
+//
+// ⚠ AND THE SEAM IS NOW BEING CLOSED FROM THE PRODUCTS' SIDE, 2026-09-18. Both consumers read the
+// generic /data/orbis-env.txt themselves - OpenGothic's game/main.cpp and RetroArch's
+// platform_orbis.c, both before their own file - and both shipped example files now tell the
+// operator to write that name. The three product paths below are deprecated from today and stay
+// only for packages already flashed; the delete condition is spelled out at each of them.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -129,13 +135,33 @@ void load_once() {
   //
   // First, so a program with a file of its own still overrides this one.
   load_file("/data/orbis-env.txt");
-  load_file("/data/tempest-env.txt");
-  load_file("/data/retroarch-env.txt");
-  // ⚠ THE DESKTOP-GL EBOOT HAS A FILE OF ITS OWN, and this list not knowing about it was worth a
-  // wasted console run: the frontend applies it (platform_orbis.c) but a module reading through
-  // orbis_env_get would have missed it entirely. Last, so it overrides the shared file, which is the
-  // same order the frontend applies them in.
-  load_file("/data/retroarch-glcore-env.txt");
+
+  // ⚠ THE THREE BELOW ARE DEPRECATED AS OF 2026-09-18 AND MUST NOT BE DELETED YET. Both products
+  // were moved onto the generic name above on that date - OpenGothic reads it first in
+  // game/main.cpp, RetroArch applies it first in frontend_orbis_init, and OpenGothic's
+  // ps4/tempest-env.example.txt (the format's normative description, which RetroArch's own comment
+  // points at) now tells the operator to write /data/orbis-env.txt. None of that reaches a console
+  // that already has a .pkg on it: the packages in people's hands read the old names, and the
+  // operator's file sits on /data where no reinstall touches it.
+  //
+  // DELETE WHEN, AND NOT BEFORE: a RELEASED OpenGothic package and a RELEASED RetroArch package
+  // both write and read the generic file. Until both exist, dropping a line here turns an
+  // operator's existing knob into a silent no-op - the exact failure this whole file was written
+  // for (measured 2026-08-23: ORBIS_NCPU=1 applied to the eboot, never reached the core, and the
+  // run came back looking like a measurement).
+  load_file("/data/tempest-env.txt");    // deprecated 2026-09-18 - OpenGothic packages before that
+  load_file("/data/retroarch-env.txt");  // deprecated 2026-09-18 - RetroArch packages before that
+  // ⚠ THE DESKTOP-GL EBOOT HAD A FILE OF ITS OWN, and this list not knowing about it was worth a
+  // wasted console run: the frontend applied it but a module reading through orbis_env_get would
+  // have missed it entirely. Last, so it overrides the shared file, which was the order the
+  // frontend applied them in.
+  //
+  // ⚠ THAT EBOOT IS GONE, and this path is the last thing in the workshop that still names it:
+  // checked 2026-09-18, `grep -rn glcore-env` over the RetroArch ps4-support tree hits nothing, and
+  // ps4/build-cores.sh records that RTRG00001 and /data/retroarch-glcore/ were both retired. It is
+  // kept on the same terms as the two above - a console that ran the desktop-GL package may still
+  // have the file - and it goes at the same time they do.
+  load_file("/data/retroarch-glcore-env.txt");  // deprecated 2026-09-18 - product itself retired
   }
 
 }  // namespace
