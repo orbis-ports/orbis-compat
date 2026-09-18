@@ -79,12 +79,12 @@ cmake -S <kit>/examples/hello -B /tmp/hello -G Ninja \
 cmake --build /tmp/hello         # -> hello, hello.oelf, eboot.bin
 
 # 3. a package, and onto the console
-scripts/ps4/make-pkg.sh --eboot /tmp/hello/eboot.bin --out-dir /tmp/hello/pkg \
+<kit>/scripts/ps4/make-pkg.sh --eboot /tmp/hello/eboot.bin --out-dir /tmp/hello/pkg \
       --title-id TMPS10099 --title "Orbis SDK Hello"
-scripts/ps4/deploy.sh  --pkg /tmp/hello/pkg/*.pkg --name hello --host <console-ip>
+<kit>/scripts/ps4/deploy.sh  --pkg /tmp/hello/pkg/*.pkg --name hello --host <console-ip>
 ```
 
-Install it from the console's package menu and start it. `scripts/ps4/logs.sh` catches the output;
+Install it from the console's package menu and start it. `<kit>/scripts/ps4/logs.sh` catches the output;
 a run that worked says this and then idles, showing a black screen:
 
 ```
@@ -502,11 +502,10 @@ scripts/release/            sdk-licenses.sh ONLY - it WRITES licenses/, NOTICE.m
                             scripts it runs
                             orbis-tls.ld - the linker script. ⚠ GPL-3.0-only, not MIT: it is the
                             SDK's own link.x, corrected. §8 and the file's own header say why
-(the tooling)               cmake/, vkloader/ and scripts/orbis-new.sh moved to the porting kit on
-                            2026-09-18 and are gone from here. scripts/ps4/orbis-env.sh resolves the
-                            toolchain file through ORBIS_KIT_DIR, falling back to this repository
-                            for bundles and pins older than that day
-scripts/ps4/                make-pkg.sh gen-icon0.py log-receiver.py logs.sh peerfilter.py
+(the tooling)               cmake/, vkloader/, scripts/ps4/ and scripts/orbis-new.sh moved to the
+                            porting kit on 2026-09-18 and are gone from here. Nothing a person runs
+                            is left in this repository; a bundle still stages them under
+                            orbis-compat/ because that is the layout consumers wrote down
 test/                       sizes.c declarations.c backtrace_host.c pthread_probe_host.c
                             umtxcheck.c crt_abi.sh (the crt's section/symbol comparison)
 build.sh                    produces build/liborbis-compat.a from src/ ONLY, then checks it
