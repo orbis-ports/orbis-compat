@@ -11,6 +11,7 @@ bundle-gate.sh         THE PUBLICATION GATE: builds hello-world AND a real port 
                        UNPACKED copy. RUN IN FULL 2026-09-17 - see "What is unproven" 
 templates/             orbis-sdk.cmake, env.sh, bundle-README.md
 hello/                 the worked example, and the gate's first stage
+test/                  27 cases over the four scripts above. ~30s, no SDK, no Mesa, no network
 ```
 
 `sdk-licenses.sh` is modelled on `~/src/unemu-org/oracles/fetch-oracles.sh` and uses the same
@@ -67,6 +68,42 @@ Only after step 6 returns `OK` is there anything worth publishing.
 ⚠ **Nothing in here publishes.** No `gh release create`, no push, no tag. Cutting and
 publishing are separate acts on purpose: the gate sits between them, and a script that did
 both would make it possible to skip it by accident.
+
+---
+
+## The tests
+
+```sh
+scripts/release/test/run.sh                 # 27 cases, ~30 s
+scripts/release/test/run.sh --list          # the case ids
+scripts/release/test/run.sh B2 B3 --keep    # one row of the pairing matrix, work tree preserved
+scripts/release/test/mutations.sh           # put each defect back and require the suite to go red
+```
+
+They need `build/liborbis-compat.a` and nothing else — no SDK, no Mesa bundle, no network, no
+console. `scripts/release/test/fixtures.sh` stands up a synthetic OpenOrbis SDK and a synthetic
+unpacked Mesa bundle (the real `manifest.txt` shape, the real import names) plus a throwaway
+three-commit orbis-compat repository, and the cases drive the real `make-sdk-bundle.sh` and
+`verify-sdk-bundle.sh` end to end against them. A cut takes ~1.3 s that way against minutes for
+the real 289 MB tree, which is what makes a 27-case matrix affordable at all.
+
+⚠ **They assert the three verdicts by name.** `OK` is exit 0, `INCOMPLETE` is exit 4, `FAILED`
+is exit 1, and no case accepts "non-zero". Conflating the first two is the defect that made this
+gate refuse every bundle it exists to fix.
+
+⚠ **`mutations.sh` is what makes the suite worth running.** Green means twenty-seven assertions
+held; it does not mean any of them *could* have failed, and a check that cannot fail is the exact
+shape of five of the six defects below. That script reinstates each defect in turn, requires the
+matching case to go red, restores every file and compares it byte for byte. `build.sh` already
+holds `test/crt_abi.sh` to the same standard with its decoy object.
+
+What the suite cannot reach, stated rather than faked: `bundle-gate.sh` stages 3–6 need a cross
+toolchain and, for stage 5, a three-hour port build. Stages 0, 1 and 1b run for real (1b is where
+the `INCOMPLETE` deadlock lived); the two defects past that point are covered by evaluating the
+real source line under the real shell options (the stage-4 `llvm-nm` count) and by a
+decoy-checked read of the real stage-5 invocation. `.github/workflows/release-scripts-test.yml`
+runs both scripts on every pull request that touches `scripts/release/`, with `--no-skips`,
+because a runner that just installed `llvm` has no honest reason to skip anything.
 
 ---
 

@@ -1,0 +1,156 @@
+# The test suite for scripts/release/ - scripts/release/test/run.sh, in CI.
+#
+# ⚠ THIS IS A DIFFERENT JOB FROM sdk-bundle.yml AND THE DIFFERENCE IS THE WHOLE POINT. That
+# workflow cuts a bundle and asks "is this bundle good?". This one asks "is the machinery that
+# answers that question good?" - and until now nothing asked it. bundle-gate.sh's first full run
+# on 2026-09-17 took ten attempts and SIX of the failures were inside the checking machinery
+# rather than in any bundle it judged; three of eight CI failures in the release round after it
+# were again in these scripts. Every one of those was found by pushing and reading a log.
+#
+# ⚠ IT DOES NOT NEED A MESA BUNDLE. The suite stands up a synthetic one - the real manifest
+# shape, the real import names, stub archives - and drives cut and verify end to end against it
+# in about 30 seconds. See scripts/release/test/fixtures.sh for what is synthetic and, more
+# importantly, for the two things that must never become so.
+#
+# ⚠ IT DOES NEED A REAL build/liborbis-compat.a, which is why the SDK is fetched. Three cases
+# read that archive with a real symbol reader: defect 1 (`sed 's/^_//'` truncating every
+# Itanium-ABI C++ name) is only reproducible against real `_Z...` symbols, and defect 5 (grep -q
+# SIGPIPEing llvm-nm under pipefail) only reproduces when nm's output is long enough to fill a
+# pipe buffer. A stub archive would make all three assert nothing while still going green.
+name: release scripts test
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'scripts/release/**'
+      - 'cmake/**'
+      - '.github/workflows/release-scripts-test.yml'
+  pull_request:
+    paths:
+      - 'scripts/release/**'
+      - 'cmake/**'
+      - 'licenses/**'
+      - 'NOTICE.md'
+      - '.github/workflows/release-scripts-test.yml'
+  workflow_dispatch:
+    inputs:
+      sdk-tag:
+        description: OpenOrbis-PS4-Toolchain release tag.
+        required: false
+        default: v0.5.4
+
+permissions:
+  contents: read
+
+env:
+  OPENORBIS_SDK_REPO: OpenOrbis/OpenOrbis-PS4-Toolchain
+  OPENORBIS_SDK_ASSET: toolchain-llvm-18.tar.gz
+  SDK_TAG: ${{ inputs.sdk-tag || 'v0.5.4' }}
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # ⚠ CHECKED OUT INTO A SUBDIRECTORY so that mesa-ps4 can sit BESIDE it. Case A1 compares
+      # the three copies of _include_sha256 - the canonical one in make-sdk-bundle.sh, the copy
+      # in verify-sdk-bundle.sh and the copy in mesa-ps4's release.yml - and the three are
+      # compared for EQUALITY across three machines that cannot share a file. On a laptop
+      # without the sibling checkout the third copy goes unchecked and the case says so; CI is
+      # where that hole gets closed, and the layout is what closes it.
+      - uses: actions/checkout@v4
+        with:
+          path: orbis-compat
+          # full history: the pairing fixtures build their own repository, but make-sdk-bundle.sh
+          # still runs `git rev-parse HEAD` against this one when anything is cut by hand here.
+          fetch-depth: 0
+
+      - name: The sibling mesa-ps4, for the third copy of the fingerprint
+        # ⚠ NOT FATAL. A fork or a token without access to the sibling must still get the other
+        # 26 cases; A1 degrades to "the third copy went unchecked" and prints that line rather
+        # than pretending. What IS fatal is a copy that is present and different.
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: orbis-ports/mesa-ps4
+          path: mesa-ps4
+          fetch-depth: 1
+
+      - name: Host tools
+        # Named individually, the same list bundle-gate.sh stage 0 names, because "install llvm"
+        # is not a diagnosis. llvm-nm is what cases E1, E2, F1 and D3 are made of; without it
+        # they SKIP, and --no-skips below turns that into a failure on this host.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 clang lld llvm cmake
+          for t in clang clang++ ld.lld llvm-ar llvm-ranlib llvm-nm cmake; do
+            command -v "$t" >/dev/null || { echo "!! $t still missing after install" >&2; exit 1; }
+          done
+
+      - name: Restore the OpenOrbis SDK
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/opt/openorbis
+          key: openorbis-${{ env.SDK_TAG }}
+
+      - name: Fetch the OpenOrbis SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          gh release download "$SDK_TAG" --repo "$OPENORBIS_SDK_REPO" \
+             --pattern "$OPENORBIS_SDK_ASSET" --dir "$tmp"
+          asset="$(find "$tmp" -maxdepth 1 -type f | head -1)"
+          [ -n "$asset" ] || { echo "!! no asset matching '$OPENORBIS_SDK_ASSET'" >&2; exit 1; }
+          mkdir -p "$tmp/x"; tar -xzf "$asset" -C "$tmp/x"
+          # Re-root on link.x rather than stripping a fixed number of components: the asset
+          # nests everything under OpenOrbis/PS4Toolchain/ today and a future one that flattens
+          # the layout must still land correctly. Same reasoning as sdk-bundle.yml.
+          root="$(dirname "$(find "$tmp/x" -name link.x -print -quit)")"
+          [ -n "$root" ] && [ "$root" != "." ] || { echo "!! no link.x anywhere in the asset" >&2; exit 1; }
+          dest="$HOME/.local/opt/openorbis"; rm -rf "$dest"; mkdir -p "$dest"
+          cp -a "$root"/. "$dest"/
+          chmod +x "$dest"/bin/linux/* 2>/dev/null || true
+
+      - name: The SDK is an SDK, not a source stash
+        run: |
+          set -euo pipefail
+          tc="$HOME/.local/opt/openorbis"
+          for f in link.x lib/libc.a lib/crt1.o; do
+            [ -e "$tc/$f" ] || { echo "!! SDK at $tc is missing $f" >&2; exit 1; }
+          done
+          echo "OO_PS4_TOOLCHAIN=$tc" >> "$GITHUB_ENV"
+
+      - name: Build the overlay
+        # ⚠ NOT --no-check. scripts/release/README.md says why for a real cut, and it holds here
+        # too: the suite reads this archive's symbol table as ground truth for what Mesa's import
+        # list must resolve against, so an archive built without its own checks would make case
+        # E1 a test of a thing nobody verified.
+        working-directory: orbis-compat
+        run: ./build.sh
+
+      - name: The suite
+        working-directory: orbis-compat
+        # --no-skips because this runner installed every tool the suite can skip for. On a laptop
+        # a skip is the honest answer; here it is a hole.
+        run: ./scripts/release/test/run.sh --no-skips
+
+      # ⚠ THE SUITE IS ITSELF UNDER TEST. run.sh going green proves twenty-seven assertions
+      # held; it does not prove any of them could have failed, and "a check that cannot fail" is
+      # the exact shape of five of the six defects this suite was written for. mutations.sh puts
+      # each defect back, one at a time, and requires the matching case to go red - then restores
+      # every file and refuses to exit 0 if any of them differs by a byte. It is the same
+      # standard build.sh already holds test/crt_abi.sh to with its decoy object.
+      - name: The suite catches the defects it was written for
+        working-directory: orbis-compat
+        run: ./scripts/release/test/mutations.sh
+
+      # A last word from git rather than from the script that did the restoring.
+      - name: Nothing was left mutated
+        working-directory: orbis-compat
+        run: git diff --exit-code
