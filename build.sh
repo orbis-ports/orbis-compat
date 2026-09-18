@@ -217,6 +217,17 @@ if OBJDUMP="${OBJDUMP}" "${ROOT}/test/crt_abi.sh" "${WORK}/decoy" "${TC}/lib" >/
 fi
 echo "== the crt objects match the SDK's interface, and the check fails without them"
 
+# 6. Every ORBIS_* knob in src/ is read through orbis_env_get and not getenv. ⚠ THIS ONE NEEDS NO
+#    TOOLCHAIN AND IS HERE ANYWAY, because the thing it catches is caught by nothing else: a knob
+#    read with getenv compiles, links, runs, and silently cannot be set on a console - every .prx
+#    links its own musl `environ`, so a switch that cannot be thrown looks exactly like a switch
+#    with no effect. Two of three were wrong for months (PLAN §11, found 2026-09-17), and both
+#    passed every check above. .github/workflows/build.yml also runs it in a job with no SDK, so a
+#    pull request that only touches src/ still gets the answer when the SDK download is the thing
+#    that broke. --self-test first, for the reason every other check here has a decoy.
+"${ROOT}/scripts/check-env-knobs.sh" --self-test
+"${ROOT}/scripts/check-env-knobs.sh"
+
 echo "== all checks passed"
 
 # ---------------------------------------------------------------------------------- what is NOT checked
