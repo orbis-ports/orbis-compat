@@ -43,7 +43,11 @@
 #   accept it, cannot detect it, and would have no idea which half to suspect.
 #
 #   So: this bundle refuses to be cut unless the Mesa bundle's own manifest says it was built
-#   against exactly the orbis-compat commit going in beside it. --allow-pair-mismatch exists
+#   against the SAME HEADERS as the orbis-compat going in beside it - the same include/ bytes,
+#   not the same commit id (that rule cost a rebuild per README typo; see the gate below).
+#   Since 2026-09-18 the manifest records orbis-compat-include-sha256, so the comparison is
+#   between two numbers measured on two machines rather than a diff this script does alone,
+#   and verify-sdk-bundle.sh redoes it offline from the tarball. --allow-pair-mismatch exists
 #   for a maintainer who knows better on a given day; it stamps BUNDLE.txt so loudly that
 #   verify-sdk-bundle.sh fails on it afterwards.
 # =========================================================================================
@@ -81,6 +85,42 @@ warn(){ printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 die(){  printf '\033[1;31mXX\033[0m %s\n' "$*" >&2; exit 1; }
 _sha256(){ if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 _size(){ if stat -c%s "$1" >/dev/null 2>&1; then stat -c%s "$1"; else stat -f%z "$1"; fi; }
+
+# =========================================================================================
+# THE include/ FINGERPRINT. ⚠ THIS FUNCTION IS THE DEFINITION; TWO OTHER COPIES EXIST AND
+# THEY MUST MATCH IT CHARACTER FOR CHARACTER:
+#
+#   scripts/release/verify-sdk-bundle.sh            (recomputes it from the unpacked bundle)
+#   mesa-ps4 .github/workflows/release.yml, step "Manifest"
+#                                                   (records what MESA ACTUALLY COMPILED)
+#
+# They cannot share a file: Mesa is built on a runner, the bundle is cut on another machine,
+# and a stranger verifies holding nothing but the tarball. The three numbers are compared for
+# EQUALITY, so any drift between the copies reads as a mismatched pair and refuses a bundle
+# that is perfectly fine. Change all three in one commit or not at all.
+#
+# The algorithm, stated once:
+#
+#   sha256 over the concatenation of "<sha256 of file>  <path>\n" for every REGULAR FILE under
+#   include/, the paths relative to the directory handed in, ordered by LC_ALL=C sort.
+#
+# Paths are inside the hash, so a header that only MOVED still changes it - which matters
+# because Mesa's -isystem search order is what turns a move into a different compile.
+#
+# ⚠ NUL-DELIMITED AND LOOPED RATHER THAN `xargs`, the same reasoning SHA256SUMS gives further
+# down: xargs splits on whitespace and re-quotes, so one header under a directory with a space
+# in its name would silently hash two names that do not exist. include/ has 27 files and none
+# of them needs that today; the point is that it keeps being right when it does not.
+#
+# ⚠ sha256sum AND shasum -a 256 PRINT THE SAME BYTES - "<64 hex><space><space><name>\n",
+# checked against each other 2026-09-18 - which is the only reason a bundle cut on macOS and a
+# Mesa built on ubuntu-latest can be compared at all. _sha256 picks whichever exists; do not
+# "simplify" this to one of them.
+_include_sha256(){
+  ( cd "$1" && find include -type f -print0 | LC_ALL=C sort -z \
+      | while IFS= read -r -d '' f; do _sha256 "$f"; done | _sha256 | cut -d' ' -f1 )
+}
+# =========================================================================================
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -133,11 +173,19 @@ MESA_VERSION="$(mesa_field mesa-version)"
 MESA_BUILT_AGAINST="$(mesa_field orbis-compat-commit)"
 MESA_SDK_TAG="$(mesa_field openorbis-sdk-tag)"
 MESA_LINKPROBE="$(mesa_field gllinkprobe)"
+# Mesa's own fingerprint of the include/ tree it compiled against, written by the Manifest step
+# of mesa-ps4's release.yml with the function above. Absent in every bundle cut before that step
+# existed, which is why nothing below treats "" as evidence of anything.
+MESA_INCLUDE_SHA="$(mesa_field orbis-compat-include-sha256)"
+INCLUDE_SHA="$(_include_sha256 "$COMPAT")"
 
 printf '   %-26s %s\n' "SDK"                  "$SDK"
 printf '   %-26s %s (%s, dirty=%s)\n' "orbis-compat" "$COMPAT" "${COMPAT_SHA:0:12}" "$COMPAT_DIRTY"
+printf '   %-26s %s\n' "orbis-compat include/" "${INCLUDE_SHA:0:12}"
 printf '   %-26s %s (mesa %s @ %s)\n' "Mesa bundle" "$MESA_BUNDLE" "$MESA_VERSION" "${MESA_COMMIT:0:12}"
 printf '   %-26s %s\n' "Mesa built against"   "${MESA_BUILT_AGAINST:0:12}"
+printf '   %-26s %s\n' "Mesa compiled include/" \
+  "$( [ -n "$MESA_INCLUDE_SHA" ] && echo "${MESA_INCLUDE_SHA:0:12}" || echo "unrecorded - this Mesa manifest predates the field" )"
 printf '   %-26s %s\n' "Mesa link probe"      "${MESA_LINKPROBE:-unrecorded}"
 
 # -----------------------------------------------------------------------------------------
@@ -158,11 +206,21 @@ PAIR=ok
 # So: the shas are still recorded, and they are still what BUNDLE.txt reports, because provenance
 # is worth having. What REFUSES is a difference in include/.
 #
+# ⚠ AND SINCE 2026-09-18 THERE IS A BETTER TEST THAN ANY DIFF: mesa-ps4's manifest records
+# orbis-compat-include-sha256, the fingerprint of the include/ tree Mesa ACTUALLY COMPILED,
+# measured on the runner by the same _include_sha256 defined at the top of this file. Comparing
+# that against the tree going into the tarball needs no history, no reachable commit and no trust
+# in either repository's idea of which commit was checked out - and it is the same number
+# verify-sdk-bundle.sh recomputes from an unpacked bundle, so the verdict stops being something
+# this script asserts and becomes something a stranger can re-derive. The git diff stays as the
+# fallback for Mesa bundles cut before that field existed.
+#
 # ⚠ AND WHEN THE COMPARISON CANNOT BE MADE, THE OLD RULE STILL APPLIES. A shallow clone resolves
 # the old commit object without its tree, so there is nothing to diff; refusing on the sha is then
 # the honest answer, and the message says which case it is. The workflow fetches full history so
 # that this is the rare path rather than the normal one.
 HEADERS_DIFFER=unknown
+PAIR_BASIS="$( [ "$MESA_BUILT_AGAINST" = "$COMPAT_SHA" ] && echo same-commit || echo include-identical )"
 if [ "$MESA_BUILT_AGAINST" = "$COMPAT_SHA" ]; then
   HEADERS_DIFFER=no
 elif git -C "$COMPAT" cat-file -e "${MESA_BUILT_AGAINST}^{tree}" 2>/dev/null; then
@@ -173,30 +231,69 @@ elif git -C "$COMPAT" cat-file -e "${MESA_BUILT_AGAINST}^{tree}" 2>/dev/null; th
   fi
 fi
 
+# ⚠ AND IF MESA RECORDED WHAT IT COMPILED, THAT OUTRANKS EVERYTHING ABOVE. The git test compares
+# two COMMITS; this compares two TREES, one of them measured on the machine that ran the compiler.
+# It is the only form of the question that survives a shallow clone, a rebased branch, or a Mesa
+# built from a checkout somebody had touched - and it is the same number verify-sdk-bundle.sh
+# re-derives from the tarball with no history at all, which is the whole point of writing it.
+if [ -n "$MESA_INCLUDE_SHA" ]; then
+  if [ "$MESA_INCLUDE_SHA" = "$INCLUDE_SHA" ]; then
+    if [ "$HEADERS_DIFFER" = yes ]; then
+      # Both halves are content-derived, so they cannot honestly disagree: git says include/ moved
+      # between the two commits, Mesa says the tree it compiled is byte-for-byte the one shipping.
+      # The reading that fits both is that orbis-compat-commit is not the tree Mesa really saw.
+      warn "git says include/ differs across ${MESA_BUILT_AGAINST:0:12}..${COMPAT_SHA:0:12}, but Mesa's"
+      warn "  recorded include/ fingerprint IS the one shipping. Mesa's checkout was not that commit."
+      warn "  Trusting the fingerprint: it was measured where the compiler ran."
+    fi
+    HEADERS_DIFFER=no
+  else
+    HEADERS_DIFFER=yes
+    warn "Mesa compiled include/ ${MESA_INCLUDE_SHA:0:12}, this bundle ships ${INCLUDE_SHA:0:12}"
+  fi
+  PAIR_BASIS="$( [ "$MESA_BUILT_AGAINST" = "$COMPAT_SHA" ] && echo same-commit || echo include-sha-match )"
+fi
+
 if [ "$HEADERS_DIFFER" = no ] && [ "$MESA_BUILT_AGAINST" != "$COMPAT_SHA" ]; then
   warn "Mesa was built against orbis-compat ${MESA_BUILT_AGAINST:0:12}, this bundle ships ${COMPAT_SHA:0:12}"
-  log  "include/ is identical across those commits - the pair is coherent"
+  if [ "$PAIR_BASIS" = include-sha-match ]; then
+    log "include/ is the tree Mesa compiled (${INCLUDE_SHA:0:12}, from Mesa's own manifest) - the pair is coherent"
+  else
+    log "include/ is identical across those commits - the pair is coherent"
+  fi
 fi
 
 if [ "$HEADERS_DIFFER" != no ]; then
   PAIR="MISMATCH"
   warn "Mesa was built against orbis-compat ${MESA_BUILT_AGAINST:0:12}"
   warn "this bundle would ship orbis-compat   ${COMPAT_SHA:0:12}"
-  # ⚠ rev-parse --verify IS NOT ENOUGH, AND THIS PRINTED BLANKS THE FIRST TIME IT FIRED IN CI:
-  #
-  #     !! between them: ? commits,  under include/
-  #
-  # A CI checkout is shallow. The old commit OBJECT can resolve while its ancestry is absent, so
-  # --verify passes and rev-list has no range to walk. The drift figure is the most useful line
-  # this warning has, and it is needed exactly when the warning fires - so compute it first and
-  # say plainly when it cannot be computed, rather than printing a question mark and an empty gap.
-  _n="$(git -C "$COMPAT" rev-list --count "$MESA_BUILT_AGAINST..$COMPAT_SHA" 2>/dev/null || true)"
-  if [ -n "$_n" ]; then
-    _d="$(git -C "$COMPAT" diff --shortstat "$MESA_BUILT_AGAINST..$COMPAT_SHA" -- include/ 2>/dev/null | tr -d '\n')"
-    warn "between them: $_n commits,${_d:- no change} under include/"
+  # ⚠ WHEN THE FINGERPRINTS DIFF AND THE COMMITS DO NOT, THE COMMIT DRIFT FIGURES BELOW ARE NOISE -
+  # they read "0 commits, no change under include/" under a refusal, which looks like a bug in this
+  # script rather than the thing it just caught. Say what actually happened instead: two checkouts
+  # of one commit whose headers are not the same bytes, which is a dirty tree, a hand-patched
+  # header, or a cache restored over the wrong ref - and is EXACTLY the case no commit-id test and
+  # no `git diff` can see. It is why the fingerprint exists.
+  if [ -n "$MESA_INCLUDE_SHA" ] && [ "$MESA_INCLUDE_SHA" != "$INCLUDE_SHA" ] \
+     && [ "$MESA_BUILT_AGAINST" = "$COMPAT_SHA" ]; then
+    warn "the commit ids AGREE and the header BYTES do not - one of the two trees was modified in"
+    warn "  place. Nothing in git can show you this; compare include/ against ${MESA_INCLUDE_SHA:0:12} by hand."
   else
-    warn "between them: cannot say - ${MESA_BUILT_AGAINST:0:12} is not reachable in this checkout"
-    warn "  (a shallow clone resolves the object but not its ancestry; git fetch --unshallow to see)"
+    # ⚠ rev-parse --verify IS NOT ENOUGH, AND THIS PRINTED BLANKS THE FIRST TIME IT FIRED IN CI:
+    #
+    #     !! between them: ? commits,  under include/
+    #
+    # A CI checkout is shallow. The old commit OBJECT can resolve while its ancestry is absent, so
+    # --verify passes and rev-list has no range to walk. The drift figure is the most useful line
+    # this warning has, and it is needed exactly when the warning fires - so compute it first and
+    # say plainly when it cannot be computed, rather than printing a question mark and an empty gap.
+    _n="$(git -C "$COMPAT" rev-list --count "$MESA_BUILT_AGAINST..$COMPAT_SHA" 2>/dev/null || true)"
+    if [ -n "$_n" ]; then
+      _d="$(git -C "$COMPAT" diff --shortstat "$MESA_BUILT_AGAINST..$COMPAT_SHA" -- include/ 2>/dev/null | tr -d '\n')"
+      warn "between them: $_n commits,${_d:- no change} under include/"
+    else
+      warn "between them: cannot say - ${MESA_BUILT_AGAINST:0:12} is not reachable in this checkout"
+      warn "  (a shallow clone resolves the object but not its ancestry; git fetch --unshallow to see)"
+    fi
   fi
   if [ "$HEADERS_DIFFER" = unknown ]; then
     warn "include/ could not be compared - ${MESA_BUILT_AGAINST:0:12} has no tree in this clone."
@@ -317,6 +414,15 @@ chmod +x "$STAGE/env.sh" "$STAGE/verify.sh"
 # -----------------------------------------------------------------------------------------
 log "manifest"
 SDK_TAG="${MESA_SDK_TAG:-unknown}"
+# ⚠ HASHED FROM THE STAGE, NOT FROM $COMPAT, because orbis-compat-include-sha256 below is a claim
+# about the bytes in the TARBALL. The stage is a `cp -a` of the same tree so the two cannot differ
+# today - and asserting it out loud is what stops a future prune filter from making BUNDLE.txt
+# describe a tree that is not in here, or from leaving the pairing verdict above standing over
+# bytes that never shipped.
+STAGED_INCLUDE_SHA="$(_include_sha256 "$STAGE/orbis-compat")"
+[ "$STAGED_INCLUDE_SHA" = "$INCLUDE_SHA" ] || die \
+"the staged include/ (${STAGED_INCLUDE_SHA:0:12}) is not the include/ the pairing gate measured
+   (${INCLUDE_SHA:0:12}). Staging changed the headers."
 {
   echo "bundle=$NAME"
   echo "version=$VERSION"
@@ -336,6 +442,10 @@ SDK_TAG="${MESA_SDK_TAG:-unknown}"
   echo "mesa-commit=$MESA_COMMIT"
   echo "mesa-version=$MESA_VERSION"
   echo "mesa-built-against-orbis-compat=$MESA_BUILT_AGAINST"
+  # Copied out of mesa/manifest.txt, which travels in the bundle beside it, for the same reason
+  # mesa-built-against-orbis-compat is copied: verify compares the two and a disagreement means
+  # one of the files was edited after the cut. `unrecorded` for a Mesa bundle older than the field.
+  echo "mesa-built-against-include-sha256=${MESA_INCLUDE_SHA:-unrecorded}"
   echo "mesa-gllinkprobe=${MESA_LINKPROBE:-unrecorded}"
   echo
   echo "# --- the pairing. See make-sdk-bundle.sh's header for why this bundle freezes the"
@@ -344,12 +454,11 @@ SDK_TAG="${MESA_SDK_TAG:-unknown}"
   # ⚠ THE FINGERPRINT IS WHAT MAKES THE VERDICT CHECKABLE OFFLINE. A stranger with the tarball has
   # no git history to diff include/ against, so "the shas differ but the headers do not" cannot be
   # re-derived from the bundle alone. This records WHAT WAS SHIPPED - a hash over the include/ tree
-  # that is in this tarball - so verify can at least prove the headers were not altered after the
-  # cut, and say plainly that the Mesa half of the claim is a recorded verdict rather than an
-  # independent check. Making it fully independent needs Mesa's own manifest to carry the same
-  # hash; that is a change to mesa-ps4's release workflow and a rebuild, not to this line.
-  echo "orbis-compat-include-sha256=$(cd "$STAGE/orbis-compat" && find include -type f | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -d" " -f1)"
-  echo "pairing-basis=$( [ "$MESA_BUILT_AGAINST" = "$COMPAT_SHA" ] && echo same-commit || echo include-identical )"
+  # that is in this tarball - and mesa/manifest.txt now records the same hash of what MESA COMPILED,
+  # measured on the runner by the identical function. Two numbers from two machines: verify proves
+  # the pair by comparing them, instead of reading one recorded verdict twice.
+  echo "orbis-compat-include-sha256=$STAGED_INCLUDE_SHA"
+  echo "pairing-basis=$PAIR_BASIS"
   echo
   echo "# --- the publication gate. UNPROVEN until bundle-gate.sh has run against an UNPACKED"
   echo "# copy of this tarball on a host with ld.lld, llvm-ar, llvm-ranlib and llvm-nm. A"

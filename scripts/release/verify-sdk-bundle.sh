@@ -14,6 +14,10 @@
 #   3. NOTICE.md is not stale relative to that table
 #   4. the Mesa half and the orbis-compat half are a coherent pair - the same commit, or two
 #      commits across which include/ is byte-identical, which is all Mesa compiles from here
+#  4b. the include/ tree in this bundle is the one Mesa compiled - recomputed here and compared
+#      against the fingerprint mesa/manifest.txt recorded on the machine that ran the compiler.
+#      This is check 4 done rather than believed; a Mesa manifest predating that field leaves it
+#      NOT CHECKED (rc=4), never silently passed
 #   5. every symbol the Mesa archives import from orbis-compat is still defined by the
 #      orbis-compat in the bundle - IF a symbol reader is available (see below)
 #   6. the layout is the one the toolchain file and every consumer's build reads
@@ -52,7 +56,17 @@ ok(){   printf '   \033[1;32mok\033[0m   %s\n' "$*"; }
 warn(){ printf '\033[1;33m!!\033[0m %s\n' "$*" >&2; }
 err(){  printf '\033[1;31mXX\033[0m %s\n' "$*" >&2; }
 _sha256c(){ if command -v sha256sum >/dev/null 2>&1; then sha256sum -c --quiet -; else shasum -a 256 -c --quiet -; fi; }
+_sha256(){ if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 _size(){ if stat -c%s "$1" >/dev/null 2>&1; then stat -c%s "$1"; else stat -f%z "$1"; fi; }
+
+# ⚠ A COPY. The definition, with the reasoning, is make-sdk-bundle.sh's _include_sha256; mesa-ps4's
+# release.yml carries the third. The three numbers are compared for EQUALITY across three machines
+# that cannot share a file, so a "tidy-up" here that changes one byte of output reads downstream as
+# a mismatched pair and refuses a bundle that is fine. Change all three in one commit or none.
+_include_sha256(){
+  ( cd "$1" && find include -type f -print0 | LC_ALL=C sort -z \
+      | while IFS= read -r -d '' f; do _sha256 "$f"; done | _sha256 | cut -d' ' -f1 )
+}
 
 RC=0
 INCOMPLETE=0
@@ -73,6 +87,13 @@ fi
 [ -f "$B/BUNDLE.txt" ] || { err "$B has no BUNDLE.txt - not an orbis-sdk bundle"; exit 1; }
 
 field(){ sed -n "s/^$1=//p" "$B/BUNDLE.txt" | head -1; }
+# mesa/manifest.txt is the PRIMARY record for anything about the Mesa half: BUNDLE.txt's copies of
+# those fields were written from it, so they are a transcription, not a second witness.
+# ⚠ THE -f GUARD IS NOT DECORATION. `sed missing-file 2>/dev/null | head -1` exits 2, pipefail
+# hands that to the assignment, and set -e ends the whole run there - so a bundle with no
+# mesa/manifest.txt died at rc=2 printing nothing, instead of reaching check 4's message that says
+# exactly what is wrong with it. Returning empty is what lets the checks below report it.
+mesa_field(){ [ -f "$B/mesa/manifest.txt" ] || return 0; sed -n "s/^$1=//p" "$B/mesa/manifest.txt" | head -1; }
 log "$(field bundle) - built $(field built) by $(field built-by)"
 
 # -----------------------------------------------------------------------------------------
@@ -119,7 +140,8 @@ log "4. Mesa and orbis-compat are the same pair"
 PAIRING="$(field pairing)"
 COMPAT_SHA="$(field orbis-compat-commit)"
 MESA_AGAINST="$(field mesa-built-against-orbis-compat)"
-MESA_MANIFEST_AGAINST="$(sed -n 's/^orbis-compat-commit=//p' "$B/mesa/manifest.txt" 2>/dev/null | head -1)"
+MESA_MANIFEST_AGAINST="$(mesa_field orbis-compat-commit)"
+BASIS="$(field pairing-basis)"
 printf '   orbis-compat shipped        %s\n' "${COMPAT_SHA:0:12}"
 printf '   Mesa built against          %s  (BUNDLE.txt)\n' "${MESA_AGAINST:0:12}"
 printf '   Mesa built against          %s  (mesa/manifest.txt, the primary record)\n' "${MESA_MANIFEST_AGAINST:0:12}"
@@ -131,37 +153,21 @@ elif [ "$MESA_AGAINST" != "$MESA_MANIFEST_AGAINST" ]; then
   err "BUNDLE.txt and mesa/manifest.txt disagree about which orbis-compat Mesa saw.
    One of them was edited after the cut."
   RC=1
-elif [ "$COMPAT_SHA" != "$MESA_MANIFEST_AGAINST" ] && [ "$(field pairing-basis)" != include-identical ]; then
+elif [ "$COMPAT_SHA" != "$MESA_MANIFEST_AGAINST" ] \
+     && [ "$BASIS" != include-identical ] && [ "$BASIS" != include-sha-match ]; then
   err "MISMATCHED PAIR. Mesa compiled against ${MESA_MANIFEST_AGAINST:0:12} and this bundle ships
    ${COMPAT_SHA:0:12}. The import-list check below does NOT cover this: it tests that names
    still exist, and a struct that changed size does not change a name. Do not publish."
   RC=1
 elif [ "$COMPAT_SHA" != "$MESA_MANIFEST_AGAINST" ]; then
-  # ⚠ THE COMMITS DIFFER AND THE HEADERS DID NOT, AND THIS IS THE WEAKEST LINE IN THIS SCRIPT.
-  # include/ is the whole of what Mesa compiles from this repository, so a bundle whose commits
-  # differ while include/ is identical is coherent - make-sdk-bundle.sh diffed the two trees and
-  # recorded pairing-basis=include-identical. But that diff needed a git history, and a stranger
-  # holding only this tarball has none, so THIS script cannot re-derive it. What it can do, and
-  # does below, is prove the headers in the bundle are the ones the cut measured.
-  #
-  # ⚠ So say which half is which rather than printing one confident line: the fingerprint is
-  # checked here; the claim about what Mesa saw is carried from the cut. Making that independent
-  # too needs mesa-ps4's manifest to record the same hash - a change there, and a rebuild.
-  warn "commits differ (${MESA_MANIFEST_AGAINST:0:12} vs ${COMPAT_SHA:0:12}) but the cut recorded"
-  warn "  pairing-basis=include-identical: include/ was byte-identical across them."
-  WANT_INC="$(field orbis-compat-include-sha256)"
-  GOT_INC="$(cd "$B/orbis-compat" && find include -type f | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
-  if [ -z "$WANT_INC" ]; then
-    warn "  no orbis-compat-include-sha256 in BUNDLE.txt - cut by an older script, cannot check"
-    INCOMPLETE=1
-  elif [ "$WANT_INC" = "$GOT_INC" ]; then
-    ok "include/ matches the fingerprint taken at the cut (${GOT_INC:0:12})"
-    warn "  what Mesa saw is a RECORDED verdict here, not one this script re-derived"
-  else
-    err "include/ does not match the fingerprint in BUNDLE.txt - the headers were altered after
-   the cut. want ${WANT_INC:0:12}, got ${GOT_INC:0:12}"
-    RC=1
-  fi
+  # ⚠ THE COMMITS DIFFER AND THE HEADERS DID NOT. include/ is the whole of what Mesa compiles from
+  # this repository, so a bundle whose commits differ while include/ is identical is coherent -
+  # measured 2026-09-17, a bundle was refused over cc75949..4f61d6f, three commits whose
+  # `git diff -- include/` is empty. The commit ids stay in BUNDLE.txt as provenance; they are not
+  # the test. What the cut recorded as its basis is repeated here, and check 4b is where the claim
+  # is actually settled - by numbers, not by this line.
+  warn "commits differ (${MESA_MANIFEST_AGAINST:0:12} vs ${COMPAT_SHA:0:12}); the cut recorded"
+  warn "  pairing-basis=$BASIS. See 4b for what was proven about the headers themselves."
 elif [ "$PAIRING" != "ok" ]; then
   err "BUNDLE.txt says pairing=$PAIRING. It was cut with --allow-pair-mismatch."
   RC=1
@@ -186,6 +192,86 @@ if [ "$(field orbis-compat-dirty)" = yes ]; then
   warn "orbis-compat-dirty=yes: the commit in BUNDLE.txt does not describe the bytes shipped."
   warn "  Buildable and gateable, but NOT publishable. Re-cut from a committed tree."
   INCOMPLETE=1
+fi
+
+# -----------------------------------------------------------------------------------------
+# 4b. THE FINGERPRINT - check 4 DONE rather than believed.
+#
+# ⚠ THIS USED TO BE THE WEAKEST LINE IN THE SCRIPT. Until mesa-ps4 recorded it, the only number
+# available was the cut's own: this script recomputed include/ and compared it against
+# BUNDLE.txt's orbis-compat-include-sha256, which proved the headers were not altered AFTER the
+# cut and nothing whatever about what Mesa compiled. "The commits differ but include/ is
+# identical" was a verdict reached elsewhere, with a git history a stranger does not have, and
+# read back out of a file written by the same run that reached it. One number, read twice.
+#
+# mesa/manifest.txt now carries orbis-compat-include-sha256 too, measured on the runner that ran
+# the compiler, by the same _include_sha256. So there are two independently produced numbers and a
+# third recomputed here from the bytes on disk, and agreement between them is evidence rather than
+# testimony. Equality is the whole test: see _include_sha256's comment on why all three copies of
+# it must stay byte-identical.
+#
+# ⚠ AN OLDER MESA MANIFEST IS "NOT CHECKED", NOT "FAILED". Every Mesa bundle published before
+# 2026-09-18 predates the field, and a bundle built from one is not thereby broken - it is
+# unproven, which is the same verdict this script gives a host with no llvm-nm and a bundle with
+# gate=unproven. It exits 4, it says which half went unchecked, and it does not silently pass.
+log "4b. include/ in this bundle is the tree Mesa compiled"
+INC_GOT="$(_include_sha256 "$B/orbis-compat")"
+INC_CUT="$(field orbis-compat-include-sha256)"
+INC_MESA="$(mesa_field orbis-compat-include-sha256)"
+INC_CUT_SAYS_MESA="$(field mesa-built-against-include-sha256)"
+printf '   include/ recomputed here    %s\n' "${INC_GOT:0:12}"
+printf '   recorded at the cut         %s  (BUNDLE.txt)\n' \
+  "$( [ -n "$INC_CUT" ] && echo "${INC_CUT:0:12}" || echo "unrecorded   " )"
+printf '   recorded by the Mesa build  %s  (mesa/manifest.txt, the primary record)\n' \
+  "$( [ -n "$INC_MESA" ] && echo "${INC_MESA:0:12}" || echo "unrecorded   " )"
+
+if [ -z "$INC_CUT" ]; then
+  warn "no orbis-compat-include-sha256 in BUNDLE.txt - cut by a script older than the field."
+  warn "  Nothing here can show whether the headers were altered AFTER the cut; the Mesa"
+  warn "  comparison below is a separate question and still stands. NOT CHECKED."
+  INCOMPLETE=1
+elif [ "$INC_CUT" = "$INC_GOT" ]; then
+  ok "include/ matches the fingerprint taken at the cut (${INC_GOT:0:12})"
+else
+  err "include/ does not match the fingerprint in BUNDLE.txt - the headers were altered after
+   the cut. want ${INC_CUT:0:12}, got ${INC_GOT:0:12}"
+  RC=1
+fi
+
+# ⚠ CHECKED BEFORE THE ABSENCE TEST, because an empty field in the manifest while BUNDLE.txt names
+# a hash is not an old manifest - it is a manifest somebody stripped after the cut, and it must not
+# be able to buy itself the lenient branch below. It runs in the other direction too: the cut
+# writes `unrecorded` when the Mesa bundle had no such field, so `unrecorded` here beside a hash
+# there means the manifest GREW one after the cut. Same shape as the commit disagreement in check
+# 4, and "" in BOTH is the genuinely old bundle that lands on the lenient branch.
+# ⚠ `[ x ] && y=` WOULD KILL THE SCRIPT HERE: under set -e a false test is the last status of the
+# list, at the top level, and the run ends at rc=1 with no message. Written as an if.
+_cut_says="$INC_CUT_SAYS_MESA"
+if [ "$_cut_says" = unrecorded ]; then _cut_says=""; fi
+if [ -n "$INC_CUT_SAYS_MESA" ] && [ "$_cut_says" != "$INC_MESA" ]; then
+  err "BUNDLE.txt and mesa/manifest.txt disagree about the include/ tree Mesa compiled:
+   ${INC_CUT_SAYS_MESA:0:12} vs ${INC_MESA:-<absent>}. One of them was edited after the cut."
+  RC=1
+elif [ -z "$INC_MESA" ] || [ "$INC_MESA" = unrecorded ]; then
+  warn "mesa/manifest.txt records no orbis-compat-include-sha256 - this Mesa bundle predates the"
+  warn "  field. What Mesa compiled is a RECORDED verdict carried from the cut, NOT re-derived"
+  warn "  here. Rebuild Mesa to get the half of check 4 that cannot be faked. NOT CHECKED."
+  INCOMPLETE=1
+elif [ "$INC_MESA" = "$INC_GOT" ]; then
+  ok "Mesa's own record of the headers it compiled IS the include/ in this bundle (${INC_GOT:0:12})"
+elif [ "$INC_MESA" = "$INC_CUT" ]; then
+  # Both recorded numbers agree with each other and neither matches the bytes: the tarball's
+  # include/ was replaced after the cut, and the check above has already failed on it. Say which
+  # of the three disagrees rather than repeating "mismatch".
+  err "the two recorded fingerprints agree (${INC_MESA:0:12}) and the include/ in this bundle is
+   ${INC_GOT:0:12}. The headers here are neither what Mesa compiled nor what was cut."
+  RC=1
+else
+  err "MISMATCHED PAIR, MEASURED. Mesa compiled include/ ${INC_MESA:0:12} and this bundle ships
+   ${INC_GOT:0:12}. This is not a commit-id disagreement that a diff can excuse - the header
+   BYTES differ. A struct that changed size does not change a symbol name, so check 5 below
+   will pass anyway and the title will fail at run time. Do not publish."
+  RC=1
 fi
 
 # -----------------------------------------------------------------------------------------
