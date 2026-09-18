@@ -1,0 +1,162 @@
+# Build the overlay and run its checks, on every push and every pull request.
+#
+# ⚠ THIS IS THE HALF OF PLAN §6 THAT DID NOT EXIST. sdk-bundle.yml cuts, verifies and gates a
+# redistributable bundle - real CI, and not this - but nothing ran `./build.sh` on a push, so a
+# broken header reached a person instead of a red build. PLAN calls that "the cheap half", and it is
+# cheap: the whole of build.sh is FOUR SECONDS on a laptop once the SDK is present. Everything
+# expensive in this workflow is downloading that SDK, which is why the cache key below matters more
+# than anything else here.
+#
+# ⚠ THE TOOLCHAIN IS INSTALLED THE WAY sdk-bundle.yml INSTALLS IT, DELIBERATELY AND IDENTICALLY -
+# same repository, same asset, same re-root-on-link.x, same destination, same cache key string. Two
+# workflows in one repository that fetch the same SDK two different ways is two things to be wrong
+# about a toolchain, and the second one is always the one nobody runs. The key is literally
+# "openorbis-v0.5.4" in both files, so the first workflow to populate the cache serves the other;
+# ⚠ if sdk-bundle.yml's `sdk-tag` default moves, OPENORBIS_SDK_TAG below has to move with it or the
+# two silently stop sharing and this one starts downloading 400 MB on every miss.
+#
+# ⚠ NO paths: FILTER, ON PURPOSE. A filter is a list of ways for a change to skip the only thing
+# that compiles this repository, and the run costs seconds. build.sh compiles 16 sources, four crt
+# objects and every header in include/ standing alone - a filter that forgot one directory would
+# reintroduce exactly the silence this workflow exists to end.
+name: build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A push that supersedes another push has superseded its answer too. Never cancel on the default
+  # branch: that is the run whose cache the pull requests restore from.
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+env:
+  OPENORBIS_SDK_REPO: OpenOrbis/OpenOrbis-PS4-Toolchain
+  OPENORBIS_SDK_ASSET: toolchain-llvm-18.tar.gz
+  OPENORBIS_SDK_TAG: v0.5.4
+
+jobs:
+  # ---------------------------------------------------------------------------------------
+  # No SDK, no network, no toolchain - the same property that makes sdk-bundle.yml's licence
+  # job worth running every time. It answers in seconds and it answers even when GitHub is
+  # having a bad day about release assets, which is the point: the defect it looks for is
+  # invisible at runtime, so the check for it must not be the first thing to go missing.
+  # ---------------------------------------------------------------------------------------
+  knobs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The check fails when it should
+        # Before trusting its verdict, for the same reason build.sh runs crt_abi.sh against a decoy:
+        # a check that cannot fail is not reporting a pass.
+        run: ./scripts/check-env-knobs.sh --self-test
+      - name: Every ORBIS_* knob in src/ goes through orbis_env_get
+        run: ./scripts/check-env-knobs.sh
+
+  # ---------------------------------------------------------------------------------------
+  # The actual build, plus the checks build.sh carries - and then a negative control proving
+  # those checks can fail.
+  # ---------------------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host tools
+        # Named individually because "install llvm" is not a diagnosis. clang/clang++ cross-compile
+        # for the target; llvm-ar builds the archive and llvm-objdump is what test/crt_abi.sh reads
+        # the crt objects with. ⚠ ld.lld is NOT here and is not an oversight: nothing in build.sh
+        # links anything for the console - the crt objects are compared, never linked, which that
+        # script's own header calls the whole remaining risk. The one link that happens is check 4,
+        # a HOST binary built with cc for the native backtrace run, and that uses the system linker.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 clang llvm
+          for t in clang clang++ llvm-ar llvm-objdump cc; do
+            command -v "$t" >/dev/null || { echo "!! $t still missing after install" >&2; exit 1; }
+          done
+          clang --version | head -1
+
+      - name: Restore the OpenOrbis SDK
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/opt/openorbis
+          key: openorbis-${{ env.OPENORBIS_SDK_TAG }}
+
+      - name: Fetch the OpenOrbis SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          gh release download "$OPENORBIS_SDK_TAG" --repo "$OPENORBIS_SDK_REPO" \
+             --pattern "$OPENORBIS_SDK_ASSET" --dir "$tmp"
+          asset="$(find "$tmp" -maxdepth 1 -type f | head -1)"
+          [ -n "$asset" ] || { echo "!! no asset matching '$OPENORBIS_SDK_ASSET'" >&2; exit 1; }
+          mkdir -p "$tmp/x"; tar -xzf "$asset" -C "$tmp/x"
+          # ⚠ Re-root on link.x rather than stripping a fixed number of components: the tarball
+          # nests everything under OpenOrbis/PS4Toolchain/ today and a future asset that flattens
+          # the layout must still land correctly. Same reasoning, same lines, as sdk-bundle.yml.
+          root="$(dirname "$(find "$tmp/x" -name link.x -print -quit)")"
+          [ -n "$root" ] && [ "$root" != "." ] || { echo "!! no link.x anywhere in the asset" >&2; exit 1; }
+          dest="$HOME/.local/opt/openorbis"; rm -rf "$dest"; mkdir -p "$dest"
+          cp -a "$root"/. "$dest"/
+          chmod +x "$dest"/bin/linux/* 2>/dev/null || true
+
+      - name: The SDK is an SDK, not a source stash
+        run: |
+          set -euo pipefail
+          # ⚠ lib/crt1.o IS IN THIS LIST FOR A REASON THE BUNDLE'S COPY DOES NOT HAVE: build.sh's
+          # crt check compares against it and REFUSES to pass if it is absent - "a check that cannot
+          # see it would pass by saying nothing". A checkout of the toolchain repository has link.x
+          # and none of the built artefacts, and would get hundreds of files further before saying
+          # anything useful.
+          tc="$HOME/.local/opt/openorbis"
+          for f in link.x lib/libc.a lib/crt1.o include/stdlib.h include/c++/v1/cstdlib; do
+            [ -e "$tc/$f" ] || { echo "!! SDK at $tc is missing $f" >&2; exit 1; }
+          done
+          echo "OO_PS4_TOOLCHAIN=$tc" >> "$GITHUB_ENV"
+
+      - name: Build orbis-compat and run its checks
+        # ⚠ NOT --no-check. ./build.sh is the build AND its own checks: two of them must FAIL
+        # without the overlay, one compiles and RUNS a host binary, one compares every crt object
+        # against the SDK's byte by byte, and one refuses a getenv-read knob. Same wording as
+        # sdk-bundle.yml's step, because it is the same decision.
+        run: ./build.sh
+
+      - name: ...and a broken header really does fail it
+        # ⚠ THE STEP THAT MAKES THE REST OF THIS WORKFLOW AN ASSERTION RATHER THAN A HABIT. PLAN §6
+        # says "done when a push runs build.sh and its checks, AND A BROKEN HEADER FAILS THE RUN",
+        # and those are two claims. This proves the second one the way build.sh proves its own
+        # checks - by requiring a failure - and it costs four seconds.
+        #
+        # ⚠ machine/cpu.h IS CHOSEN, NOT CONVENIENT: no file in src/ includes it, so a break there
+        # is invisible to the compile of the archive and can only be caught by check 3, which
+        # compiles every header in include/ standing alone. Breaking a header src/ DOES include
+        # would have proved the far weaker claim that the build compiles its own sources.
+        #
+        # The log is grepped for the specific complaint, so a build.sh that fails for some unrelated
+        # reason - a missing tool, a bad SDK - cannot be mistaken for this check working.
+        run: |
+          set -euo pipefail
+          cp include/machine/cpu.h "$RUNNER_TEMP/cpu.h.orig"
+          printf '\nstruct negative_control { int x\n' >> include/machine/cpu.h
+          rc=0; ./build.sh --out "$RUNNER_TEMP/negative" >"$RUNNER_TEMP/negative.log" 2>&1 || rc=$?
+          cp "$RUNNER_TEMP/cpu.h.orig" include/machine/cpu.h      # before any exit: leave the tree clean
+          [ "$rc" -ne 0 ] || {
+            echo "!! ./build.sh PASSED with a syntactically broken include/machine/cpu.h." >&2
+            echo "   Every green run above this line means nothing. PLAN §6." >&2
+            tail -20 "$RUNNER_TEMP/negative.log" >&2; exit 1; }
+          grep -q 'machine/cpu.h is not self-contained' "$RUNNER_TEMP/negative.log" || {
+            echo "!! build.sh failed (rc=$rc), but not on the broken header - so this control is" >&2
+            echo "   measuring something else. The last 20 lines:" >&2
+            tail -20 "$RUNNER_TEMP/negative.log" >&2; exit 1; }
+          echo "== a broken header fails the run, and fails it by name"
