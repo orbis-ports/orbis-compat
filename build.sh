@@ -90,6 +90,46 @@ _have="$( { llvm-ar t "${OUT}/liborbis-compat.a" 2>/dev/null || ar t "${OUT}/lib
   exit 1; }
 echo "== ${OUT}/liborbis-compat.a (${_have} objects)"
 
+# ---------------------------------------------------------------------------------- libc16
+#
+# ⚠ THE OTHER HALF OF THE 16-BIT wchar_t STORY, AND WITHOUT IT src/orbis_wchar32.c IS A HAZARD.
+#
+# Three members of the SDK's libc.a are NOT replaced and stay as they are: regcomp.lo, regexec.lo
+# and vfscanf.lo. Each of them calls mbtowc/mbrtowc with a pointer to a wchar_t ON ITS OWN STACK -
+# a two-byte slot, because those members were compiled against the 16-bit typedef. Our 32-bit
+# mbtowc writes four bytes into it. regcomp keeps a saved register directly behind that slot.
+#
+# ⚠ AND THIS IS NOT HYPOTHETICAL FOR ANYTHING LINKING MESA: libgallium references regcomp (driconf),
+# so every port with a graphics stack pulls regcomp.lo.
+#
+# So those three are linked as COPIES whose call is renamed to __orbis_libc16_mbtowc/_mbrtowc, and
+# the SDK's ORIGINAL 16-bit mbtowc.lo and mbrtowc.lo are linked under those new names. The 16-bit
+# members then talk to 16-bit callers and the 32-bit definitions serve everybody else.
+#
+# Objects, never an archive: an object on the link line always wins, and the toolchain file puts
+# these on every consumer's link line. The technique is sonic3air's, where it was discovered; what
+# is new here is that it stops being one game's private arrangement.
+LIBC16="${OUT}/libc16"
+rm -rf "${LIBC16}"; mkdir -p "${LIBC16}"
+_ar()      { llvm-ar      "$@" 2>/dev/null || ar      "$@"; }
+_objcopy() { llvm-objcopy "$@" 2>/dev/null || objcopy "$@"; }
+( cd "${LIBC16}" && _ar x "${TC}/lib/libc.a" regcomp.lo regexec.lo vfscanf.lo mbtowc.lo mbrtowc.lo )
+for _m in regcomp regexec mbtowc; do
+  _objcopy --redefine-sym mbtowc=__orbis_libc16_mbtowc   "${LIBC16}/${_m}.lo" "${LIBC16}/libc16_${_m}.o"
+done
+for _m in vfscanf mbrtowc; do
+  _objcopy --redefine-sym mbrtowc=__orbis_libc16_mbrtowc "${LIBC16}/${_m}.lo" "${LIBC16}/libc16_${_m}.o"
+done
+rm -f "${LIBC16}"/*.lo
+_n16="$(ls "${LIBC16}"/*.o 2>/dev/null | wc -l | tr -d ' ')"
+[ "${_n16}" = 5 ] || { echo "!! libc16: produced ${_n16} object(s), expected 5" >&2; exit 1; }
+# The rename is asserted, not assumed: a silently-unrenamed copy would put a 32-bit mbtowc back
+# under the callers this exists to protect, and nothing downstream would notice.
+llvm-nm "${LIBC16}/libc16_regcomp.o" 2>/dev/null | grep -q '__orbis_libc16_mbtowc' || {
+  echo "!! libc16: regcomp copy does not reference __orbis_libc16_mbtowc - the rename did nothing" >&2
+  exit 1; }
+echo "== ${LIBC16} (${_n16} objects, 16-bit mbtowc/mbrtowc for the members that keep it)"
+
 # ---------------------------------------------------------------------------------- crt
 #
 # ⚠ NOT IN THE ARCHIVE, AND NOT BUILT WITH THE ARCHIVE'S FLAGS. crt/ is this repository's own C
