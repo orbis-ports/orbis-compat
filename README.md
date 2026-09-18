@@ -316,8 +316,15 @@ PS4, with this       2 MiB          2 MiB
 
 **The policy: a thread that did not choose gets what the main thread has** - read at runtime, not
 hardcoded, so it follows the platform instead of a number someone picked. That is also exactly what
-glibc does with `RLIMIT_STACK`. `ORBIS_THREAD_STACK=<KiB>` overrides it; `0` interposes nothing, so
-an A/B needs no rebuild.
+glibc does with `RLIMIT_STACK`. `ORBIS_THREAD_STACK=<KiB>` raises it and is **clamped up**: a number below the platform's own
+default is reported and ignored, because this knob's safe direction is up. `ORBIS_THREAD_STACK=platform`
+turns the interposer off entirely, which is what an A/B needs and which logs a ⚠ line every run.
+
+⚠ **`0` used to mean "off" and no longer does** - it now means what unset means. On 2026-09-18 a
+libretro core died as SIGILL with a write eight bytes under `%rsp` on an absent page, because
+`/data/orbis-env.txt` still held `ORBIS_THREAD_STACK=0` from one test of that file the day it was
+added. A file every image on the console reads is not a place where one stale line may quietly
+disable a protection.
 
 ⚠ **A fresh `pthread_attr_t` reports 65536 here**, so "asked for the default" and "asked for
 nothing" are indistinguishable and both are overridden. The consequence is one-directional: a caller
