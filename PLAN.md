@@ -498,85 +498,93 @@ would add a linking exception. One message. The `.init_array` defect should be s
 
 ---
 
-## 13. This repository has two poles, and one of them is a porting kit
+## 13. This repository had two poles, and one of them is now its own repository
 
-Measured 2026-09-18, by file:
+**DONE, 2026-09-18.** `orbis-ports/orbis-porting-kit` is public, tagged `v1.0.0`…`v1.4.0` with `v1`
+moving, and publishes one bundle, `orbis-sdk-v1` (92 MB, `gate=pass`). Every consumer in the
+organisation builds against both repositories and all CI is green.
 
-| bucket | what | lines | direction |
-|---|---|---|---|
-| core | `orbis_env` 185, `orbis_log` 62 | 247 | substrate; both poles call it |
-| compat | `include/` (27 files), `orbis_stat` 197, `orbis_sigev` 325, `orbis_clock` 234, `orbis_timer` 196, `orbis_thread` 506, `orbis_sysconf` 27, `crt/` | ~1700 | **shrinks** - §8 maps each item upstream |
-| kit | `vkloader/` 9418, `cmake/` + `scripts/` 1594, `orbis_boot` 552, `orbis_mem` 463, `orbis_paths` 259, `ps4_app` 294, `orbis_netlog` 85, `orbis_bigheap` 38 | ~12700 | **grows** |
+**The rule that decided each file: if a person runs it or points a build at it, it is the kit's.**
+By that rule the kit took `cmake/`, `vkloader/`, `scripts/ps4/`, `scripts/orbis-new.sh`, both
+examples, the whole release machinery (cut, offline verify, publication gate, 27 tests, mutation
+harness) and `services/{audio,ime,data}` — 780 lines lifted out of OpenGothic. What stayed here is
+`include/`, `src/`, `crt/`, `optional/`, `test/`, `licenses/` and `build.sh`: nothing a person
+invokes.
 
-The kit bucket is already the majority of this repository by volume, under a name that says
-"compat", and the README opens with *"This repository may shrink one day."* Those two sentences
-cannot both stay true of one repository.
+`scripts/release/sdk-licenses.sh` stayed, and that is the rule rather than an exception to it: it
+**writes** this repository's `licenses/`, `NOTICE.md` and `LICENSING.md`. The cut calls it where it
+lives and ships its output in the bundle.
 
-⚠ **It does not cut cleanly in two.** `orbis_thread`, `orbis_sigev` and `orbis_mem` call
-`orbis_env_get`; those three plus `orbis_mmap` and `orbis_clock` call `orbis_log`. So env and log
-are not kit material, they are the substrate under both - a two-way cut would point that dependency
-backwards and fail halfway. `orbis_mmap` (508) sits on the line: part musl gap, part this console's
-memory policy. Read it before assigning it.
+⚠ **Five runtime shims came the other way, out of the ports and into `src/`**, because every one of
+them works by definition order — an object on the link line ahead of `-lc` and `-lc++`:
+`orbis_wchar32.c` 1524, `orbis_cxa_guard.c` 329, `orbis_abort_report.c` 183, `orbis_cv_fix.cpp` 114,
+`orbis_thread_atexit.c` 109. All five lived in a game's or a frontend's build directory, several in
+two drifted copies. None of them was ever about that game.
 
-**`orbis-ports/orbis-porting-kit` exists, private**, and carries `vkloader/` and `cmake/` as
-VERBATIM COPIES, not moves - every port keeps building against this repository exactly as before,
-and a wrong boundary can be abandoned without touching them. `vkloader/` went first because it is
-the cleanest cut in the tree: it includes `<orbis/libkernel.h>` and Mesa's headers and no overlay
-API at all.
+⚠ **`wchar32` has a second half that must never be separated from it.** `regcomp`, `regexec` and
+`vfscanf` stay as `libc.a` members and call `mbtowc` with a two-byte `wchar_t` on their own stack;
+`regcomp` keeps a saved register directly behind that slot. `build/libc16/` holds renamed copies so
+those three keep a 16-bit `mbtowc`, and the kit's `ps4-openorbis.cmake` puts them on every
+executable's link line. **Mesa's `libgallium` references `regcomp`** for driconf, so this reaches
+every port with a graphics stack. Shipping the 32-bit members without `libc16` is live stack
+corruption, not a cosmetic mismatch.
 
-Proven there on 2026-09-18: the triangle example builds with the kit's own toolchain file and
-vkloader; and **OpenGothic, unmodified, at its own pinned commit, builds and packages** against a
-`composed/` tree that symlinks this repository's checkout EXCEPT `cmake/` and `vkloader/`, which
-point into the kit. By absence rather than by shadowing, so anything reaching back for the
-overlay's copies fails instead of quietly succeeding. Result: `IV0000-TMPS10021_00-TEMPESTOPENGOTHI.pkg`,
-51 MB, and the port's checkout came back clean.
+**Consumers take the toolchain through one published composite action**, which replaced the
+`orbis-toolchain` copies that had reached 317 lines against 332 in three repositories with
+different cache keys:
 
-**Done when:** this repository stops shipping `vkloader/` and `cmake/`, and the copies in the kit
-become the only ones. That is the expiry date on `scripts/copied-files.txt` over there; until then
-its `check-copies.sh` compares byte for byte against the checkout each build used, so drift is a red
-build rather than a discovery. The disease being prevented is measured: the `orbis-toolchain`
-composite action lived in three repositories and had reached 317 lines against 332 with different
-cache keys before anyone read them side by side.
+```yaml
+- uses: orbis-ports/orbis-porting-kit/.github/actions/setup-orbis@v1
+  with: { orbis-compat-ref: <sha>, mesa-release: orbis-mesa-<sha> }
+```
 
-**Not yet moved, and why:** `orbis_boot`, `orbis_paths`, `ps4_app`, `bigheap` and `netlog` all call
-`orbis_log`/`orbis_env_get`, so they wait until the core bucket is named. `scripts/release/` belongs
-to the kit by rights but was hardened with 27 tests the same week; forking it the next day would
-trade a real safeguard for a tidy diagram.
+or, for a shipped build, `sdk-bundle: orbis-sdk-v1` in place of all three pins. Both modes end at
+the same exports: `OO_PS4_TOOLCHAIN`, `ORBIS_COMPAT_DIR`, `ORBIS_KIT_DIR`, `ORBIS_MESA_SRC`,
+`ORBIS_MESA_BUILD`.
 
-**The kit's own backlog, ranked by what the ports measured**, not by what seemed likely:
+**Still here, and deliberately unassigned:** `orbis_boot` 552, `orbis_mmap` 508, `orbis_mem` 463,
+`orbis_paths` 259 and `optional/{ps4_app, orbis_netlog, orbis_bigheap}`. All of them call
+`orbis_env_get` or `orbis_log`, which are the substrate under both poles and belong to neither; a
+cut that moved them would point that dependency backwards. `orbis_mmap` is the genuinely ambiguous
+one — part musl gap, part this console's memory policy. Read it before assigning it.
 
-1. one published `setup-orbis` and a `workflow_call` workflow - deletes the three drifted copies
-2. one version string in place of three pins (SDK tag, overlay sha, Mesa release)
-3. fold sonic3air's runtime shims in - `orbis_wchar32.c` 1515, `orbis_cxa_guard.c` 329,
-   `orbis_thread_atexit.c` 109 against this repository's 29-line **stub**, `orbis_cv_fix.cpp` 115,
-   `orbis_abort_report.c` 172. None of it is about Sonic and all of it lives in a game's build
-   directory today.
-4. **`orbis_jit`** - an executable-memory arena. 9 of the 30 core patches in RetroArch's
-   `ps4/core-patches/` are this one gap (`executable memory for the recompiler`, `for the rsp jit`,
-   `for the lightrec code buffer`, `code caches out of text`, `one arena for compiled code`,
-   `give the jit code buffer a platform`), beetle-psx carries `orbis_lightrec_mem`, and Panda3DS,
-   dynarmic and 3dsTrident are waiting in the org untouched. This is the largest single gap the
-   ports have found, and it is not audio or input.
-5. the SDL2 orbis backend - video 888, joystick 534, audio 326 - lives inside **sonic3air's
-   vendored SDL tree**, which is a plain directory rather than a submodule. Most engines a stranger
-   arrives with are SDL2, so this is the widest lever in the whole plan and it is currently sitting
-   in one game.
+⚠ **The copy phase is over.** `vkloader/` and `cmake/` were verbatim copies for two days precisely
+so a wrong boundary could be abandoned without breaking a port; they are gone from this tree now and
+the kit's are the only ones. `scripts/copied-files.txt` and `check-copies.sh` expired with them.
+
+**What is left of the kit's backlog**, ranked by what the ports measured:
+
+1. **`orbis_jit`** — an executable-memory arena, and the largest single gap the ports have found.
+   9 of the 30 core patches in RetroArch's `ps4/core-patches/` are this one absence (*executable
+   memory for the recompiler*, *for the rsp jit*, *for the lightrec code buffer*, *code caches out
+   of text*, *one arena for compiled code*, *give the jit code buffer a platform*). The
+   specification is already written twice from opposite directions: `RetroArch/ps4/orbis_exec_mem.c`
+   promotes pages the core already owns and records that rel32 needs the allocation within ±2 GiB of
+   the module's text, and beetle-psx's `orbis_lightrec_mem.c` maps the buffer up front. Panda3DS,
+   dynarmic and 3dsTrident wait in the org untouched. It is a runtime shim, so it lands in `src/`
+   here rather than in the kit.
+2. **The SDL2 orbis backend** — video 888, joystick 534, audio 326 — still lives inside sonic3air's
+   vendored SDL tree, which is a plain directory rather than a submodule. Most engines a stranger
+   arrives with are SDL2, so this is the widest lever in the plan and it currently sits in one game.
+   Agreed shape: SDL2 is in maintenance, so fork it at its newest tag, carry the backend there, and
+   substitute the games' copies one at a time. Only about 8 lines touch upstream files (three
+   bootstrap arrays), and keeping that number small is the whole point — the fork has to stay cheap
+   to rebase. SDL3 is a later project.
 
    ⚠ **`orbis-ports/SDL` was not that lever and is archived as of 2026-09-18.** It held exactly one
-   commit ahead of upstream - d2f6ea6ff, `&& !defined(__ORBIS__)` on SDL_endian.h's FreeBSD arm -
+   commit ahead of upstream — d2f6ea6ff, `&& !defined(__ORBIS__)` on SDL_endian.h's FreeBSD arm —
    and **nothing consumed it**: Panda3DS's submodule points at `libsdl-org/SDL`, and sonic3air
    vendors an UNPATCHED copy that worked because of a private four-line `sys/endian.h` shim in its
    own build directory. Three answers to one question, none aware of the others. `include/sys/endian.h`
    here is the fourth and the last: it is a superset of the shim, the shim is deleted, and the patch
    was never needed by anyone who had this header. Archived rather than deleted because the token
-   here cannot delete repositories - `gh auth refresh -h github.com -s delete_repo` first if that is
+   here cannot delete repositories — `gh auth refresh -h github.com -s delete_repo` first if that is
    what you want.
 
 ⚠ **A kit is read by people who did not write it.** `cmake/orbis-tls.ld` is GPL-3.0-only with no
 linking exception and is on every consumer's link line; a linker script directs the linker rather
 than being linked in, but the question will be asked and the answer has to be written down rather
-than inferred. And `__PS4__` vs `__ORBIS__` (Parking) has to be settled before strangers pin either
-one.
+than inferred. `__PS4__` vs `__ORBIS__` is settled — see Parking.
 
 ---
 
