@@ -27,8 +27,7 @@
  * there is one policy rather than two.
  *
  * THE POLICY: a thread that did not choose gets what the MAIN thread has - measured at runtime, not
- * hardcoded, so it follows the platform rather than a number someone picked. ORBIS_THREAD_STACK
- * overrides it: a size in KiB, or 0 to interpose nothing.
+ * hardcoded, so it follows the platform rather than a number someone picked. Not configurable.
  */
 #ifndef _ORBIS_THREAD_H
 #define _ORBIS_THREAD_H
@@ -97,8 +96,7 @@ void threadFailures(unsigned long *createFailed, unsigned long *attrFailed);
  *     the array.
  *
  * ⚠ IT IS SKIPPED FOR A THREAD WITH LESS THAN 256 KiB OF STACK, and that case is real: the
- * interposer stands down entirely under ORBIS_THREAD_STACK=0, and a caller may ask for a small
- * stack on purpose. Taking a quarter of a stack to report on the other three quarters is a worse
+ * a caller may ask for a small stack on purpose. Taking a quarter of a stack to report on the other three quarters is a worse
  * trade than reporting nothing, so below that threshold the trampoline gets out of the way.
  */
 

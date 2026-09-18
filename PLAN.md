@@ -73,10 +73,7 @@ Both open questions were answered by a probe before a line of policy was written
     default-init attr          65536 B     the same, so ONE policy rather than two
 
 The policy is "a thread that did not choose gets what the main thread has", read at runtime - which
-is what glibc does with RLIMIT_STACK, so it is not a number this port invented. `ORBIS_THREAD_STACK`
-raises it and clamps up; `ORBIS_THREAD_STACK=platform` disables the interposer, which is what an A/B
-needs. ⚠ `0` meant "disable" until 2026-09-18 and now means what unset means - see README section 3
-for the crash that cost.
+is what glibc does with RLIMIT_STACK, so it is not a number this port invented. Not configurable since 2026-09-18.
 
 Confirmed on the console with the interposer linked in, the probe reading LIVE threads through
 `pthread_attr_get_np`:

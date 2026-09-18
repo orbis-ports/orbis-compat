@@ -100,20 +100,8 @@ void reportPoolFailure(const char* what, int rc, unsigned long n) {
 // file that can override it is applied by the title early but not necessarily before the first
 // thread exists.
 //
-//   unset      -> what the MAIN thread has, which this platform sets to 2 MB
-//   <n>        -> n KiB, CLAMPED UP to that same default; a smaller number cannot lower it
-//   platform   -> interpose nothing, hand every request through untouched. The measurement escape.
-//
-// ⚠ `0` NO LONGER DISABLES ANYTHING, AND THAT CHANGE HAS A DATE ON IT. It used to, and on
-// 2026-09-18 a libretro core died as SIGILL with a write eight bytes under %rsp on an absent page -
-// a stack overflow wearing an illegal-instruction signal - because /data/orbis-env.txt on the
-// development console still held ORBIS_THREAD_STACK=0 from a single test of that file the day it
-// was introduced. Half an hour went into reading registers before anyone read a config file.
-//
-// A knob whose safe direction is up should not be able to go down by accident, and one line left in
-// a file every image on the console reads is exactly that accident. So the number clamps, `0` means
-// what unset means, and the raw platform behaviour - which PLAN section 1 genuinely needed to prove
-// a hang was NOT this interposer's doing - needs a word nobody types by habit.
+// Every thread that did not choose gets what the MAIN thread has. Not configurable: a knob here
+// could only point down, and down is a guard page.
 std::atomic<size_t> g_floor{~size_t(0)};   // ~0 means "not resolved yet"
 
 size_t mainThreadStack();
@@ -123,45 +111,7 @@ size_t resolveFloor() {
   if(v!=~size_t(0))
     return v;
 
-  // ⚠ orbis_env_get, NOT getenv, AND THE DIFFERENCE IS WHETHER THIS KNOB CAN BE SET AT ALL. On
-  // this console setenv() in one image is invisible to another, so a standalone eboot's environ
-  // is whatever the loader gave it and nothing writes ORBIS_* into it. getenv therefore answers
-  // null on every console run, and the switch that the README's own A/B method depends on could
-  // only ever be exercised on the laptop.
-  //
-  // Found 2026-09-17 trying to A/B this very interposer after the bundle's hello crashed with
-  // SIGSYS inside pthread_create: the env file was uploaded, read by the overlay, and this line
-  // never looked at it. orbis_env_get answers from the process environment FIRST, so anything
-  // genuinely set still wins and nothing about a laptop run changes.
-  //
-  // Safe here because resolveFloor() is lazy - first pthread_create, not static init - so libc
-  // is up and orbis_env_get may open a file. Do not move this to a constructor.
-  const size_t platformSafe = mainThreadStack();
-  const char*  e = orbis_env_get("ORBIS_THREAD_STACK");
-
-  if(e!=nullptr && strcmp(e,"platform")==0) {
-    // The only way to get the raw behaviour, and it says so out loud every run. A measurement that
-    // needs this is deliberate; a file left behind is not, and this spelling tells the two apart.
-    orbis_log("⚠ thread stack: ORBIS_THREAD_STACK=platform - the interposer is OFF and every thread "
-              "created without an explicit size gets the platform's 64 KiB. A pipeline compile wants "
-              "~72 KB of frame. If something dies with a fault just under %%rsp, this line is why.");
-    v = 0;
-    } else if(e!=nullptr) {
-    const long kib = strtol(e,nullptr,10);
-    v = (kib>0) ? size_t(kib)*1024 : 0;
-    // ⚠ CLAMPED UP, NEVER DOWN. A request under the platform's own default is a downgrade dressed
-    // as configuration; it is reported and ignored rather than obeyed, because obeying it makes
-    // every thread one deep call from a guard page and nothing says so until something dies.
-    if(v<platformSafe) {
-      orbis_log("thread stack: ORBIS_THREAD_STACK=%s asks for %llu KiB, which is below this "
-                "platform's %llu KiB - using %llu KiB. This knob can raise the floor, not lower it.",
-                e,(unsigned long long)(v/1024),
-                (unsigned long long)(platformSafe/1024),(unsigned long long)(platformSafe/1024));
-      v = platformSafe;
-      }
-    } else {
-    v = platformSafe;
-    }
+  v = mainThreadStack();
 
   // A floor below the platform's own default would be a downgrade, and one below PTHREAD_STACK_MIN
   // is not a stack at all. Either means the probe failed, and doing nothing is the safe answer.
@@ -518,8 +468,7 @@ void orbis::threadStackProbe() {
   const size_t floor = resolveFloor();
   orbis_log("thread probe: floor is %llu KiB (%s)",
             (unsigned long long)(floor/1024),
-            (floor==0) ? "interposer DISABLED, ORBIS_THREAD_STACK=0"
-                       : "ORBIS_THREAD_STACK, or the main thread's own size");
+            (floor==0) ? "probe failed" : "the main thread's own size");
 
   // The verdict, stated so the log answers the question instead of only carrying the numbers.
   if(viaNull!=0 && viaNull<256*1024)
