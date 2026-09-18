@@ -70,7 +70,25 @@ for src in "${ROOT}"/src/*.cpp; do [[ -e "${src}" ]] || continue
 
 rm -f "${OUT}/liborbis-compat.a"
 llvm-ar rcs "${OUT}/liborbis-compat.a" "${objs[@]}" 2>/dev/null || ar rcs "${OUT}/liborbis-compat.a" "${objs[@]}"
-echo "== ${OUT}/liborbis-compat.a"
+
+# ⚠ THE ARCHIVE IS COUNTED, BECAUSE THE FALLBACK ABOVE CAN PRODUCE AN EMPTY ONE AND SAY NOTHING.
+# MEASURED 2026-09-18 on macOS: llvm-ar is keg-only and off PATH by default, so the `||` arm ran
+# /usr/bin/ar, Apple's ar, which will not take x86_64-pc-freebsd12-elf objects. It wrote a 96-byte
+# archive holding `__.SYMDEF SORTED` and no members, exited 0, and every check below still passed -
+# because none of them read the archive. Local builds had been producing nothing for who knows how
+# long while reporting success.
+#
+# Counting members is the cheap half; the symbol count is what catches an archive that has members
+# and no content. Both are compared against the object list this script just built, so the check
+# cannot drift as files are added.
+_want="${#objs[@]}"
+_have="$( { llvm-ar t "${OUT}/liborbis-compat.a" 2>/dev/null || ar t "${OUT}/liborbis-compat.a" 2>/dev/null; } | grep -c '\.o$' || true)"
+[ "${_have}" = "${_want}" ] || {
+  echo "!! ${OUT}/liborbis-compat.a has ${_have} member(s), expected ${_want}." >&2
+  echo "   The archiver refused these objects. On macOS that is /usr/bin/ar being used because" >&2
+  echo "   llvm-ar is not on PATH: brew install llvm, then put /opt/homebrew/opt/llvm/bin first." >&2
+  exit 1; }
+echo "== ${OUT}/liborbis-compat.a (${_have} objects)"
 
 # ---------------------------------------------------------------------------------- crt
 #
