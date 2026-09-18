@@ -9,10 +9,14 @@
 #   add_subdirectory("${ORBIS_COMPAT_DIR}/optional" ps4-common)
 #   target_link_libraries(<app> PRIVATE ps4-app)
 #
-# ⚠ NOTHING ELSE IN optional/ IS A TARGET HERE, and that is the point of the directory. orbis_bigheap.c
-# and orbis_thread_atexit_stub.c are POLICY a consumer adopts by naming the source file: an unlimited
-# heap that competes with the driver's arena, and a thread_local stub that leaks by design. They must
-# not arrive because somebody linked a logger.
+# ⚠ NOTHING ELSE IN optional/ IS A TARGET HERE, and that is the point of the directory.
+# orbis_bigheap.c is POLICY a consumer adopts by naming the source file: an unlimited heap that
+# competes with the driver's arena. It must not arrive because somebody linked a logger.
+#
+# orbis_thread_atexit_stub.c was the other one and is GONE as of 2026-09-18. It leaked by design
+# because no correct implementation existed here; one does now - src/orbis_thread_atexit.c, which
+# registers destructors through pthread_key_create and runs them on the right thread in the right
+# order - so the stub is not a policy choice any more, it is just the wrong answer.
 #
 # ⚠ AND NEITHER TARGET IS IN liborbis-compat.a. Consumers link that archive with --whole-archive, so a
 # member is present whether it was wanted or not; -lSceNet is not something the CTS or Mesa should

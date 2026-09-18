@@ -479,9 +479,12 @@ include/ps4_app.h           the console log channel's API - implemented in optio
 include/machine/, sys/, pthread_np.h
 src/                        THE ARCHIVE. orbis_backtrace.c orbis_log.c orbis_boot.cpp
                             orbis_{stat,mmap,mem,paths,thread,timer,sigev,clock}.cpp
+                            and, since 2026-09-18, the corrections that work by DEFINITION ORDER:
+                            orbis_wchar32.c (a 16-bit wchar_t in libc.a), orbis_cxa_guard.c,
+                            orbis_cv_fix.cpp, orbis_thread_atexit.c, orbis_abort_report.c
 optional/                   NOT the archive - policy, added by name. orbis_netlog.cpp ps4_app.cpp
-                            orbis_bigheap.c orbis_thread_atexit_stub.c, and a CMakeLists that
-                            declares ps4-netlog / ps4-app from the first two ONLY
+                            orbis_bigheap.c, and a CMakeLists that declares ps4-netlog / ps4-app
+                            from the first two ONLY
 vkloader/                   the Vulkan C ABI: vkloader.c, 771 weak thunks, gen.py, a CMakeLists
 cmake/                      ps4-openorbis.cmake (the toolchain file), ps4-package.cmake,
                             orbis-compat.cmake - locate / orbis::compat / verify,
