@@ -582,4 +582,12 @@ interrupting.
   and threads have 2 MB (§1), finding out whether `sigaltstack` is unimplemented or merely refused
   as called is an overlay question. It has been printed in every run for weeks and read by nobody.
 * the GPU stall, one submit in ~1200 - pre-existing, agreed to leave, and not an overlay concern
-* `__PS4__` -> `__ORBIS__` across the port (27 files) - not this repository's call alone
+* ~~`__PS4__` -> `__ORBIS__` across the port (27 files)~~ **ANSWERED 2026-09-18, and it needs no
+  rename.** The toolchain file defines `__ORBIS__`, `PS4` and `__PS4__`, so both spellings work and
+  always did. Which is *right* is settled by the SDK's own `include/SDL2/SDL_platform.h` - upstream
+  SDL: `#if defined(__ORBIS__) || defined(PS4)` / `#undef __PS4__` / `#define __PS4__ 1`. So
+  `__ORBIS__` and `PS4` are the inputs an SDK sets and `__PS4__` is SDL's derived output; Sony's own
+  SDK sets `__ORBIS__` (and `__PROSPERO__` for PS5), which means an engine already ported to that
+  SDK compiles here unchanged. Rule, now in the kit's README and beside the flags: write new code
+  and anything upstreamable against `__ORBIS__`, rename nothing, and let the 24 files that test
+  `__PS4__` be corrected when they are touched for another reason.
