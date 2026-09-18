@@ -41,10 +41,16 @@ set -euo pipefail
 
 MODE="${1:-udp}"
 case "$MODE" in
-  udp | netlog) MODE="udp" ;;
-  klog | tcp)   MODE="klog" ;;
-  -h | --help)  sed -n '2,9p' "$0"; exit 0 ;;
-  *) echo "logs: unknown mode '$MODE' (expected udp|klog)" >&2; exit 1 ;;
+udp | netlog) MODE="udp" ;;
+klog | tcp) MODE="klog" ;;
+-h | --help)
+  sed -n '2,9p' "$0"
+  exit 0
+  ;;
+*)
+  echo "logs: unknown mode '$MODE' (expected udp|klog)" >&2
+  exit 1
+  ;;
 esac
 
 # ⚠ FIRST, BECAUSE PS4_LOG_DIR READS IT. It was defined two lines BELOW its own use for a day: the
@@ -53,7 +59,7 @@ esac
 # had not been started since.
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-PS4_IP="${PS4_IP:-192.168.100.2}"
+PS4_IP="${PS4_IP:-192.168.3.200}"
 PS4_LOG_PORT="${PS4_LOG_PORT:-18194}"
 PS4_KLOG_PORT="${PS4_KLOG_PORT:-3232}"
 # ⚠ RELATIVE TO THIS SCRIPT, NOT TO THE CALLER. It used to be a bare "build-ps4-logs", so captures
@@ -61,7 +67,10 @@ PS4_KLOG_PORT="${PS4_KLOG_PORT:-3232}"
 # a run's log went somewhere nobody looked and the transport was briefly blamed instead. One place,
 # always; PS4_LOG_DIR still overrides.
 PS4_LOG_DIR="${PS4_LOG_DIR:-$(cd "$HERE/../.." && pwd)/build-ps4-logs}"
-command -v python3 > /dev/null || { echo "logs: python3 is required" >&2; exit 1; }
+command -v python3 >/dev/null || {
+  echo "logs: python3 is required" >&2
+  exit 1
+}
 
 mkdir -p "$PS4_LOG_DIR"
 OUT="${PS4_LOG_DIR}/ps4-${MODE}-$(date +%Y%m%d-%H%M%S).log"
@@ -70,9 +79,9 @@ echo "logs: capturing to $OUT"
 if [[ "$MODE" == "udp" ]]; then
   ALLOW=()
   case "${PS4_LOG_ALLOW:-any}" in
-    any | "")  ;;
-    console)   ALLOW=(--allow-from "$PS4_IP") ;;
-    *)         ALLOW=(--allow-from "$PS4_LOG_ALLOW") ;;
+  any | "") ;;
+  console) ALLOW=(--allow-from "$PS4_IP") ;;
+  *) ALLOW=(--allow-from "$PS4_LOG_ALLOW") ;;
   esac
   exec python3 "$HERE/log-receiver.py" udp --port "$PS4_LOG_PORT" --out "$OUT" "${ALLOW[@]}"
 fi

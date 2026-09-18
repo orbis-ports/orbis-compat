@@ -17,11 +17,17 @@ been offered - §7 records where each item would belong, not an arrangement with
 Everything below this section explains *why*. This section is *how*, and it is first because the
 question it answers used to be answered on page four.
 
+⚠ **THE TOOLING MOVED, 2026-09-18.** Everything a person runs or unpacks - the project generator,
+the worked examples, the toolchain file, the Vulkan loader shim and the whole bundle cut - now lives
+in **orbis-ports/orbis-porting-kit**. This repository is the overlay: the corrections that make the
+SDK's libc behave, which is what the kit and the toolchain file compile against. It has no
+user-facing surface of its own on purpose, because §7's whole plan is for it to shrink.
+
 ### 0.1 The short way: one script
 
 ```sh
-scripts/orbis-new.sh --check        # what is missing, and how to fix each thing
-scripts/orbis-new.sh mygame         # a project that builds, packages and uploads
+orbis-new.sh --check        # what is missing, and how to fix each thing   (in the kit)
+orbis-new.sh mygame         # a project that builds, packages and uploads
 ```
 
 `--check` changes nothing, needs no console and no network. It reports each dependency with what it
@@ -67,7 +73,7 @@ git clone https://github.com/orbis-ports/orbis-compat && cd orbis-compat
 ./build.sh                       # builds build/liborbis-compat.a, then checks it
 
 # 2. the worked example
-cmake -S scripts/release/hello -B /tmp/hello -G Ninja \
+cmake -S <kit>/examples/hello -B /tmp/hello -G Ninja \
       -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/ps4-openorbis.cmake"
 cmake --build /tmp/hello         # -> hello, hello.oelf, eboot.bin
 
@@ -91,7 +97,7 @@ orbis-sdk bundle: all checks passed
 
 `hello` proves the **layout** - corrected headers, the overlay under `--whole-archive`, the linker
 script, `crt1.o`, `create-fself` - and touches no Mesa, so nothing else can fail and be mistaken for
-it. `scripts/release/triangle/` is the other half: RADV, a swapchain, a pipeline compiled from
+it. The kit's `examples/triangle/` is the other half: RADV, a swapchain, a pipeline compiled from
 SPIR-V, and a frame on the screen. Two examples rather than one because a single one mixing both
 reports a driver problem as a layout problem and the reverse.
 
@@ -99,7 +105,7 @@ It needs the Mesa bundle and `glslangValidator` on the host (`apt-get install gl
 `brew install glslang`):
 
 ```sh
-cmake -S scripts/release/triangle -B /tmp/tri -G Ninja \
+cmake -S <kit>/examples/triangle -B /tmp/tri -G Ninja \
       -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/ps4-openorbis.cmake" \
       -DORBIS_MESA_SRC=<mesa-bundle> -DORBIS_MESA_BUILD=<mesa-bundle>/build-orbis
 cmake --build /tmp/tri
@@ -484,13 +490,19 @@ crt/                        an MIT C runtime: crt1, crtlib, crti, crtn, and orbi
 licenses/  NOTICE.md  LICENSING.md
                             the licence ledger for the redistributable bundle - one row per
                             component, with the text every one of them requires to travel
-scripts/release/            the bundle: sdk-licenses.sh, make-sdk-bundle.sh, verify-sdk-bundle.sh,
-                            bundle-gate.sh, and the two worked examples §0 builds - hello/ (layout,
-                            no Mesa) and triangle/ (RADV, a swapchain, a frame on the television)
-.github/workflows/          sdk-bundle.yml, which cuts and verifies a bundle. Nothing else is in CI
+scripts/release/            sdk-licenses.sh ONLY - it WRITES licenses/, NOTICE.md and LICENSING.md,
+                            so it stayed where the files it writes are. The cut, the verify, the
+                            gate, their 27 tests and the two worked examples moved to the porting
+                            kit on 2026-09-18; the cut calls this script where it lives and ships
+                            it in the bundle
+.github/workflows/          build.yml (./build.sh and its checks on every push, with a negative
+                            control) and the ORBIS_* knob check. The bundle workflow moved with the
+                            scripts it runs
                             orbis-tls.ld - the linker script. ⚠ GPL-3.0-only, not MIT: it is the
                             SDK's own link.x, corrected. §8 and the file's own header say why
-scripts/orbis-new.sh        the dependency doctor (--check) and the project generator, §0.1
+scripts/orbis-new.sh        the dependency doctor (--check) and the project generator, §0.1.
+                            ⚠ ALSO IN THE KIT, which is where it belongs and where it will stay;
+                            the copy here dies when the consumers stop reaching for it
 scripts/ps4/                make-pkg.sh gen-icon0.py log-receiver.py logs.sh peerfilter.py
 test/                       sizes.c declarations.c backtrace_host.c pthread_probe_host.c
                             umtxcheck.c crt_abi.sh (the crt's section/symbol comparison)
