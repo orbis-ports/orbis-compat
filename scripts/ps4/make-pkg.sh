@@ -13,9 +13,9 @@
 #   PkgTool.Core pkg_build               -> <CONTENT_ID>.pkg
 #
 # PkgTool.Core is an old self-contained .NET build with two host quirks:
-#   * it links libssl.so.1.1 and rejects OpenSSL 3 -> PS4_PKGTOOL_OPENSSL_LIB
+#   * its crypto shim dlopen()s OpenSSL 1.x by soname and knows nothing of 3 -> see the probe
 #   * it has no ICU in its closure -> DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
-# The flake devShell exports both; outside it we fall back to a /nix/store probe.
+# The flake devShell exports both; outside it this script resolves the library itself.
 set -euo pipefail
 
 die() { echo "make-pkg: $*" >&2; exit 1; }
@@ -77,16 +77,94 @@ CONTENT_LABEL="${CONTENT_LABEL:0:16}"
 CONTENT_ID="IV0000-${TITLE_ID}_00-${CONTENT_LABEL}"
 
 export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
-if [[ -z "${PS4_PKGTOOL_OPENSSL_LIB:-}" ]]; then
-  for cand in /nix/store/*-openssl-1.1.1*/lib/libssl.so.1.1; do
-    if [[ -e "$cand" ]]; then
-      PS4_PKGTOOL_OPENSSL_LIB="$(dirname "$cand")"
-      break
-    fi
+
+# ⚠ WHAT PkgTool.Core ACTUALLY DLOPENS, measured with `strings bin/linux/PkgTool.Core`: five
+# candidate sonames - libssl.so.1.1, libssl.so.1.0.2, libssl.so.1.0.0, libssl.so.10, libssl.so. -
+# and libssl.so.3 is NOT among them. So every current distro and every GitHub runner, which ship
+# OpenSSL 3 alone, build and link the port 100%, produce an eboot, and only THEN die in pkg_build
+# with "No usable version of libssl was found" - core dumped, and make deletes the fresh .elf on
+# its way out. bin/macos/PkgTool.Core names none of those sonames (no libssl/libcrypto string in
+# the binary at all; `otool -L` lists libc++ and libSystem only) because the macOS .NET build uses
+# Apple's crypto - nothing here is fatal on Darwin.
+#
+# ⚠ THIS PROBE USED TO BE THREE COPIES OF A WORKFLOW STEP - orbis-compat sdk-bundle.yml,
+# OpenGothic ps4.yml, RetroArch frontend.yml - each unpacking the same .deb into a different
+# directory and exporting PS4_PKGTOOL_OPENSSL_LIB. It belongs in the one place that runs
+# PkgTool.Core. Order is by cost: what the caller already knows, then what the host already has,
+# then the network.
+openssl1x_dir() {
+  local dir soname
+  # 1.1 first because it is what the OpenOrbis samples were built against; the 1.0 sonames are
+  # accepted by the same shim and are what an older or a compat package provides.
+  local sonames=(
+    libssl.so.1.1 libssl.so.1.0.2 libssl.so.1.0.0 libssl.so.10
+    libssl.1.1.dylib libssl.1.0.0.dylib
+  )
+  # Linux first (the only platform where this is load-bearing), macOS after it. Homebrew's
+  # openssl@1.1 is keg-only, so it is never on the default loader path and has to be named;
+  # both prefixes are listed because `brew --prefix` is absent on a host without Homebrew.
+  local dirs=(
+    /nix/store/*-openssl-1.1*/lib
+    /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib64 /usr/local/lib /usr/lib
+    /opt/homebrew/opt/openssl@1.1/lib /usr/local/opt/openssl@1.1/lib
+  )
+  local brew_lib
+  if command -v brew >/dev/null 2>&1; then
+    brew_lib="$(brew --prefix openssl@1.1 2>/dev/null || true)"
+    [[ -n "$brew_lib" ]] && dirs=("$brew_lib/lib" "${dirs[@]}")
+  fi
+  for dir in "${dirs[@]}"; do
+    [[ -d "$dir" ]] || continue   # an unmatched /nix/store glob arrives here literally
+    for soname in "${sonames[@]}"; do
+      [[ -e "$dir/$soname" ]] && { printf '%s\n' "$dir"; return 0; }
+    done
   done
+  return 1
+}
+
+# Ubuntu dropped libssl1.1 from the archive at noble, so there is no package to apt-get install;
+# the security pool still publishes the .deb and it gets unpacked by hand. The exact filename
+# floats with the pool's latest security upload, so it is discovered rather than named. Cached
+# under orbis-env.sh's work root, so a second package build in the same checkout refetches
+# nothing. amd64 only - the .deb has no other arch and the tool is an x86-64 ELF anyway.
+fetch_openssl1x() {
+  local lib="${ORBIS_WORK:-${XDG_CACHE_HOME:-${HOME}/.cache}/orbis-ports}/openssl11/lib"
+  if [[ ! -e "$lib/libssl.so.1.1" ]]; then
+    local base=http://security.ubuntu.com/ubuntu/pool/main/o/openssl
+    local tmp; tmp="$(mktemp -d)"
+    command -v dpkg-deb >/dev/null 2>&1 \
+      || die "no OpenSSL 1.x for PkgTool.Core and no dpkg-deb to unpack one; install your distro's OpenSSL 1.1 compat package or set PS4_PKGTOOL_OPENSSL_LIB"
+    curl -sSfL --max-time 120 -o "$tmp/index.html" "$base/" \
+      || die "cannot reach $base to fetch libssl1.1; set PS4_PKGTOOL_OPENSSL_LIB to a directory holding libssl.so.1.1"
+    # Read the saved index rather than piping curl into grep: under `set -o pipefail` a grep that
+    # matches nothing takes the whole pipeline's status and the die below would never be reached.
+    local deb
+    deb="$(LC_ALL=C grep -oE 'libssl1\.1_[^"]*_amd64\.deb' "$tmp/index.html" | LC_ALL=C sort -V | tail -1 || true)"
+    [[ -n "$deb" ]] || die "no libssl1.1 .deb listed at $base; set PS4_PKGTOOL_OPENSSL_LIB instead"
+    curl -sSfL --max-time 120 -o "$tmp/libssl.deb" "$base/$deb" || die "failed to download $base/$deb"
+    dpkg-deb -x "$tmp/libssl.deb" "$tmp/x"
+    mkdir -p "$lib"
+    # libcrypto too: the shim resolves its symbols out of the same directory and a lone libssl
+    # would dlopen and then fail on the first EVP call.
+    cp -a "$tmp"/x/usr/lib/x86_64-linux-gnu/lib{ssl,crypto}.so.1.1 "$lib"/
+    rm -rf "$tmp"
+  fi
+  printf '%s\n' "$lib"
+}
+
+if [[ -z "${PS4_PKGTOOL_OPENSSL_LIB:-}" ]]; then
+  PS4_PKGTOOL_OPENSSL_LIB="$(openssl1x_dir || true)"
 fi
-if [[ -n "${PS4_PKGTOOL_OPENSSL_LIB:-}" ]]; then
+if [[ -z "$PS4_PKGTOOL_OPENSSL_LIB" && "$(uname -s)" == "Linux" && "$(uname -m)" == "x86_64" ]]; then
+  PS4_PKGTOOL_OPENSSL_LIB="$(fetch_openssl1x)"
+fi
+if [[ -n "$PS4_PKGTOOL_OPENSSL_LIB" ]]; then
+  # Both loader variables, not one per platform: the Linux tool reads LD_LIBRARY_PATH, dyld reads
+  # DYLD_LIBRARY_PATH, and setting the one the host ignores costs nothing.
   export LD_LIBRARY_PATH="${PS4_PKGTOOL_OPENSSL_LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  export DYLD_LIBRARY_PATH="${PS4_PKGTOOL_OPENSSL_LIB}${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+elif [[ "$(uname -s)" != "Darwin" ]]; then
+  die "no libssl.so.1.1 for PkgTool.Core on $(uname -s)/$(uname -m); install an OpenSSL 1.1 compat package (Fedora/RHEL: compat-openssl11, Arch: openssl-1.1, nix: nixpkgs#openssl_1_1) or set PS4_PKGTOOL_OPENSSL_LIB to the directory holding it"
 fi
 
 STAGE="$OUT_DIR/pkg-stage"
