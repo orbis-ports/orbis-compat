@@ -30,8 +30,12 @@ orbis_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
 # packaged the previous day's work with nothing anywhere announcing it.
 ORBIS_COMPAT_DIR="${ORBIS_COMPAT_DIR:?orbis-env.sh sourced without ORBIS_COMPAT_DIR set}"
 
-if [[ ! -f "${ORBIS_COMPAT_DIR}/cmake/ps4-openorbis.cmake" ]]; then
-  echo "!! ${ORBIS_COMPAT_DIR} is not an orbis-compat checkout - cmake/ps4-openorbis.cmake is missing." >&2
+# ⚠ TESTED BY A HEADER SINCE 2026-09-18, NOT BY THE TOOLCHAIN FILE. cmake/ moved to
+# orbis-ports/orbis-porting-kit and this repository keeps include/ and the archive, so the old test
+# would now refuse a perfectly good checkout - and would have refused it with a message about a file
+# that is not this repository's to have.
+if [[ ! -f "${ORBIS_COMPAT_DIR}/include/orbis_prefix.h" ]]; then
+  echo "!! ${ORBIS_COMPAT_DIR} is not an orbis-compat checkout - include/orbis_prefix.h is missing." >&2
   echo "   Clone https://github.com/orbis-ports/orbis-compat next to this repository, or set" >&2
   echo "   ORBIS_COMPAT_DIR to where it already is." >&2
   return 1 2>/dev/null || exit 1
@@ -105,5 +109,16 @@ orbis_die()  { echo "!! $*" >&2; exit 1; }
 orbis_note() { echo "== $*"; }
 
 # The toolchain file every CMake consumer passes, named once so a rename is one edit.
-ORBIS_CMAKE_TOOLCHAIN="${ORBIS_COMPAT_DIR}/cmake/ps4-openorbis.cmake"
-export ORBIS_CMAKE_TOOLCHAIN
+#
+# ⚠ IT LIVES IN THE KIT NOW. ORBIS_KIT_DIR comes from orbis-porting-kit's setup-orbis action or
+# from an SDK bundle's env.sh; the fallback is this repository, which still carries cmake/ in every
+# bundle cut before 2026-09-18 and in any checkout pinned older than it. A caller that has neither
+# gets a path that does not exist, which is the failure it should get - guessing a third location
+# is how a build ends up configured against a tree nobody named.
+ORBIS_KIT_DIR="${ORBIS_KIT_DIR:-}"
+if [[ -n "${ORBIS_KIT_DIR}" && -f "${ORBIS_KIT_DIR}/cmake/ps4-openorbis.cmake" ]]; then
+  ORBIS_CMAKE_TOOLCHAIN="${ORBIS_KIT_DIR}/cmake/ps4-openorbis.cmake"
+else
+  ORBIS_CMAKE_TOOLCHAIN="${ORBIS_COMPAT_DIR}/cmake/ps4-openorbis.cmake"
+fi
+export ORBIS_KIT_DIR ORBIS_CMAKE_TOOLCHAIN

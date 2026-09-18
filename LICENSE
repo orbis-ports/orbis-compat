@@ -1,14 +1,15 @@
-orbis-compat is MIT-licensed, with two named exceptions. Both files say so in their own
-headers; each file's SPDX-License-Identifier is authoritative for that file.
-
-  cmake/orbis-tls.ld     GPL-3.0-only. It is the OpenOrbis PS4 Toolchain's own link.x (release
-                         v0.5.4, asset toolchain-llvm-18.tar.gz) with two match patterns added to
-                         the .tls rule. That toolchain is GPL-3.0 and grants no linking exception,
-                         so this derivative cannot be relicensed. It carried an MIT header until
-                         2026-09-17; that header was wrong.
+orbis-compat is MIT-licensed, with ONE named exception. That file says so in its own header;
+each file's SPDX-License-Identifier is authoritative for that file.
 
   include/sys/ioccom.h   BSD-3-Clause. Its macros follow FreeBSD's sys/sys/ioccom.h because they
-                         encode an ABI and cannot be written differently and still work.
+                         describe an ABI this platform inherited; a re-implementation that differed
+                         would be wrong rather than original.
+
+⚠ cmake/orbis-tls.ld WAS the other exception and is no longer in this repository. It moved to
+orbis-ports/orbis-porting-kit on 2026-09-18 with the rest of the CMake, and it is still
+GPL-3.0-only there - a derivative of the OpenOrbis toolchain's own link.x, which grants no linking
+exception. A bundle staging it into orbis-compat/cmake/ carries the kit's copy and the kit's
+LICENSE covers it.
 
 The MIT terms below cover everything else in this repository.
 

@@ -23,7 +23,9 @@ cmake_minimum_required(VERSION 3.16)
 project(orbis-compat-optional CXX)
 
 if(NOT PS4)
-  message(FATAL_ERROR "optional/ builds only with cmake/ps4-openorbis.cmake")
+  message(FATAL_ERROR
+    "optional/ builds only with ps4-openorbis.cmake, which lives in orbis-ports/orbis-porting-kit "
+    "since 2026-09-18 (or in orbis-compat/cmake/ inside an SDK bundle)")
 endif()
 
 set(PS4_NETLOG_HOST "192.168.100.1" CACHE STRING "dev host that receives netlog datagrams")

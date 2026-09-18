@@ -77,7 +77,7 @@ file out of a bundle means complying with *that file's* licence, not with this r
 * **`sdl2-khronos`** — inline - each file carries its own complete licence text, so no separate file is required.
 * **`freetype`** — 88 headers, FREETYPE_MAJOR 2 / MINOR 5, "Copyright 1996-2013". FTL.TXT is NOT in the SDK tarball.
 * **`stb`** — The only third-party component in the tarball whose notice was already present.
-* **`orbis-compat`** — The overlay, minus the two files below which are NOT MIT. LICENSE names both exceptions.
+* **`orbis-compat`** — The overlay, minus the two files below which are NOT MIT. Since 2026-09-18 the cmake/*.cmake and vkloader/** staged under this path come from https://github.com/orbis-ports/orbis-porting-kit - same MIT terms, same author, different repository; the bundle keeps the old layout because toolchain/orbis-sdk.cmake names it.
 * **`compat-crt`** — orbis-compat's own startup objects, written here rather than taken from either upstream. Absent from a bundle cut before they existed.
 * **`compat-tls-ld`** — Derived from the SDK's link.x. Two substantive lines differ; the rest of the diff is its own comment.
 * **`compat-ioccom`** — Its macros follow FreeBSD's sys/sys/ioccom.h because they encode an ABI and cannot be written differently and still work.
@@ -117,4 +117,4 @@ scripts/release/sdk-licenses.sh notice    # rewrite this file
 scripts/release/sdk-licenses.sh verify    # offline: the gate CI runs
 ```
 
-Generated 2026-09-17.
+Generated 2026-09-18.

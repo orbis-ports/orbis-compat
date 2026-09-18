@@ -26,8 +26,9 @@ user-facing surface of its own on purpose, because §7's whole plan is for it to
 ### 0.1 The short way: one script
 
 ```sh
-orbis-new.sh --check        # what is missing, and how to fix each thing   (in the kit)
-orbis-new.sh mygame         # a project that builds, packages and uploads
+git clone https://github.com/orbis-ports/orbis-porting-kit
+orbis-porting-kit/scripts/orbis-new.sh --check    # what is missing, and how to fix each thing
+orbis-porting-kit/scripts/orbis-new.sh mygame     # a project that builds, packages and uploads
 ```
 
 `--check` changes nothing, needs no console and no network. It reports each dependency with what it
@@ -74,7 +75,7 @@ git clone https://github.com/orbis-ports/orbis-compat && cd orbis-compat
 
 # 2. the worked example
 cmake -S <kit>/examples/hello -B /tmp/hello -G Ninja \
-      -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/ps4-openorbis.cmake"
+      -DCMAKE_TOOLCHAIN_FILE="<kit>/cmake/ps4-openorbis.cmake"
 cmake --build /tmp/hello         # -> hello, hello.oelf, eboot.bin
 
 # 3. a package, and onto the console
@@ -106,7 +107,7 @@ It needs the Mesa bundle and `glslangValidator` on the host (`apt-get install gl
 
 ```sh
 cmake -S <kit>/examples/triangle -B /tmp/tri -G Ninja \
-      -DCMAKE_TOOLCHAIN_FILE="$PWD/cmake/ps4-openorbis.cmake" \
+      -DCMAKE_TOOLCHAIN_FILE="<kit>/cmake/ps4-openorbis.cmake" \
       -DORBIS_MESA_SRC=<mesa-bundle> -DORBIS_MESA_BUILD=<mesa-bundle>/build-orbis
 cmake --build /tmp/tri
 ```
@@ -410,8 +411,9 @@ Who does this today:
 
 ```
 Mesa        build-support/orbis/cross/orbis.ini.in    include only - it builds a static archive
-OpenGothic  cmake/ps4-openorbis.cmake (this repo's)   include + archive + both opt-in targets
-VK-GL-CTS   cmake/ps4-openorbis.cmake (this repo's)   include + archive
+OpenGothic  ps4-openorbis.cmake (the kit's)           include + archive + both opt-in targets
+VK-GL-CTS   ps4-openorbis.cmake (the kit's)           include + archive
+RetroArch   Makefile.orbis, flags transcribed         include + archive + the kit's vkloader
 Tempest     nothing of its own - the title configures it
 ```
 
@@ -500,9 +502,10 @@ scripts/release/            sdk-licenses.sh ONLY - it WRITES licenses/, NOTICE.m
                             scripts it runs
                             orbis-tls.ld - the linker script. ⚠ GPL-3.0-only, not MIT: it is the
                             SDK's own link.x, corrected. §8 and the file's own header say why
-scripts/orbis-new.sh        the dependency doctor (--check) and the project generator, §0.1.
-                            ⚠ ALSO IN THE KIT, which is where it belongs and where it will stay;
-                            the copy here dies when the consumers stop reaching for it
+(the tooling)               cmake/, vkloader/ and scripts/orbis-new.sh moved to the porting kit on
+                            2026-09-18 and are gone from here. scripts/ps4/orbis-env.sh resolves the
+                            toolchain file through ORBIS_KIT_DIR, falling back to this repository
+                            for bundles and pins older than that day
 scripts/ps4/                make-pkg.sh gen-icon0.py log-receiver.py logs.sh peerfilter.py
 test/                       sizes.c declarations.c backtrace_host.c pthread_probe_host.c
                             umtxcheck.c crt_abi.sh (the crt's section/symbol comparison)
