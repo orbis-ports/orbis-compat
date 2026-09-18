@@ -4,6 +4,7 @@
  * Built by build.sh against the real toolchain, and by cmake/orbis-compat.cmake at configure time.
  * No console needed: a wrong include order is a compile error here. */
 #include <pthread.h>
+#include <wchar.h>
 #include <stddef.h>
 
 /* Corrected: musl declared these smaller than Sony writes. */
@@ -19,6 +20,14 @@ _Static_assert(sizeof(pthread_rwlock_t) == 56, "pthread_rwlock_t must keep musl'
 
 /* Four bytes, and correct at four: Sony's pthread_once writes one byte into it (measured). */
 _Static_assert(sizeof(pthread_once_t) == 4, "pthread_once_t changed - re-measure before trusting it");
+
+/* ⚠ wchar_t, AND THIS ONE IS ABOUT TWO LANGUAGES AGREEING. The SDK's C headers say
+ * `unsigned short`; clang and the prebuilt libc++.a say 32 bits, and in C++ the compiler wins
+ * whatever a header says. include/bits/alltypes.h corrects C to match, and src/orbis_wchar32.c
+ * replaces the libc.a members that were compiled against the 16-bit typedef. If this assertion
+ * ever fails, those members are back to walking two-byte elements over four-byte characters -
+ * which showed up as SIGSEGV in wmemcpy before main(). */
+_Static_assert(sizeof(wchar_t) == 4, "wchar_t must be 32-bit here - see include/bits/alltypes.h");
 
 /* The overlay must not displace the rest of alltypes.h. */
 _Static_assert(sizeof(size_t) == 8, "size_t lost");

@@ -41,5 +41,35 @@ typedef void *pthread_spinlock_t;
 #define __DEFINED_pthread_spinlock_t
 #endif
 
+/* ⚠ wchar_t IS SIXTEEN BITS IN THIS SDK'S C HEADERS AND THIRTY-TWO EVERYWHERE ELSE, and that is a
+ * live data corruption rather than a papercut.
+ *
+ * The SDK's own bits/alltypes.h says `typedef unsigned short wchar_t` for C. clang targeting
+ * x86_64-pc-freebsd12-elf says `__WCHAR_TYPE__ int`, `__WCHAR_WIDTH__ 32` - measured with
+ * `clang --target=... -dM -E -` - and in C++ wchar_t is a keyword, so the compiler wins there
+ * whatever a header says. The prebuilt libc++.a agrees with the compiler.
+ *
+ * So a C translation unit and a C++ translation unit in one program disagreed about the width of
+ * the same type, and the SDK's libc.a sided with neither consistently: its wide functions were
+ * compiled against the 16-bit typedef and walk two-byte elements - wmemcpy copies with
+ * `movw (%r8,%rdx,2)`, wcslen tests `cmpw $0,2(%rdi,%rax)`. Every std::wstring a C++ port builds
+ * therefore went through a libc reading half of each character. First victim on record: a static
+ * initializer in sonic3air's librmx FileIO.cpp, SIGSEGV in wmemcpy BEFORE main(), with klog as the
+ * only witness.
+ *
+ * Correcting the typedef alone would make C agree with C++ and leave both wrong against libc.a, so
+ * this arrives together with src/orbis_wchar32.c, which replaces those libc.a members whole. The
+ * header and the implementation are one change and must not be separated.
+ *
+ * ⚠ NOT GUARDED BY __NEED_wchar_t, unlike everything above it. musl only defines wchar_t when a
+ * header asks for it, but the damage is done by code that gets the type from the COMPILER (all of
+ * C++) meeting code that got it from the header. Defining it here whenever C is being compiled is
+ * what makes the two agree; __DEFINED_wchar_t then suppresses musl's, exactly as above.
+ */
+#if !defined(__cplusplus) && !defined(__DEFINED_wchar_t)
+typedef __WCHAR_TYPE__ wchar_t;
+#define __DEFINED_wchar_t
+#endif
+
 /* No include guard, on purpose: alltypes.h is included many times with different __NEED_ macros. */
 #include_next <bits/alltypes.h>
