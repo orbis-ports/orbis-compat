@@ -8,7 +8,11 @@ nothing here needs a console to be tested, which is deliberate.
 
 **This repository may shrink one day.** Much of what is here corrects the SDK rather than extending
 it, so it would belong upstream if anyone ever took it. ⚠ Nobody has been asked, and nothing has
-been offered - §7 records where each item would belong, not an arrangement with anyone.
+been offered - §7 records where each item would belong, not an arrangement with anyone. ⚠ And it is
+only the corrections that could shrink: §1.1 names the three roofs living under this repository's one
+name and puts every file under one, and the runtime-library roof - `orbis_jit`, `orbis_boot`,
+`orbis_netlog`, the `ps4_app` log tee - is API a program calls by name and cannot be deleted by anybody
+fixing an SDK.
 
 ---
 
@@ -161,6 +165,83 @@ The two disagree, structurally, and the port had been working around it in four 
 none of which shared the fix. `Tempest/cmake/ps4-openorbis.cmake` passed only the SDK's include
 directory, so **Mesa was the only component compiled against our corrected headers**, and `struct
 stat` was corrected only in OpenGothic, which Mesa does not link.
+
+## 1.1 Three roofs under one name, and which one each file is under
+
+"Compat" names one of the three things in this repository, and the other two have been living under
+its name since they arrived. This section gives them names and puts every file under one. ⚠ **It moves
+nothing.** Every `src/` member is on every consumer's link line under `--whole-archive`
+(`ps4-openorbis.cmake`, `orbis_compat_target()`), so moving one is a decision about what this
+repository produces, and that decision has not been made. Knowing which roof a file is under is what
+makes the decision possible later; it is not the decision.
+
+| roof | what it is | how it stops existing |
+|---|---|---|
+| **correction** | a libc, libc++, header or kernel behaviour the SDK gets wrong, reached from outside the port by the **linker or the preprocessor** — nobody writes its name | OpenOrbis fixes its SDK and the file is deleted |
+| **runtime library** | a function a program **calls by name**, because the platform has the facility and the SDK ships no wrapper | never; it is the platform's API, the way libnx's `kernel/jit.h` is |
+| **tooling** | what a person runs, or points a build at | never |
+
+Two labels are needed that are not roofs, and pretending otherwise is how the tangle started:
+**substrate** is a file both roofs call and neither owns, and **policy** is a decision about one
+program — a heap size, what happens after a crash, a path under `/data` — which is not this
+repository's to make at all and is here only as an opt-in that no target links by default.
+
+The test that assigns a file is the linker's, and it can be run: a member that defines only foreign
+names is reached without being named and is a correction; a member that defines only `orbis_*` or
+`orbis::` names can only be reached by a program that names it, and is a library. Measured today with
+`llvm-nm -g --defined-only` over each of the 19 members of `build/liborbis-compat.a`: **162 distinct
+external definitions, 45 of them `orbis`-named and 0 of them `sce`-named** (the per-member column below
+sums to 168 because a few compiler-emitted names such as `DW.ref.__gxx_personality_v0` appear in more
+than one member):
+
+| file | lines | externals: `orbis`/foreign | roof |
+|---|---|---|---|
+| `src/orbis_wchar32.c` + `orbis_wchar32_width.h` | 1524 + 165 | 0 / 73 | correction |
+| `src/orbis_cxa_guard.c` | 329 | 0 / 3 (`__cxa_guard_*`) | correction |
+| `src/orbis_cv_fix.cpp` | 114 | 0 / 6 (`std::condition_variable`) | correction |
+| `src/orbis_thread_atexit.c` | 109 | 0 / 1 (`__cxa_thread_atexit_impl`) | correction |
+| `src/orbis_abort_report.c` | 183 | 1 / 4 (`abort`, `__assert_fail`, …) | correction |
+| `src/orbis_backtrace.c` | 111 | 1 / 3 (`backtrace*`) | correction |
+| `src/orbis_stat.cpp` | 197 | 2 / 4 (`stat`, `lstat`, `fstat`, `fstatat`) | correction |
+| `src/orbis_mmap.cpp` | 508 | 3 / 4 (`__mmap`, `__munmap`, `__madvise`) | correction |
+| `src/orbis_sigev.cpp` | 325 | 1 / 5 (`timer_*`) | correction |
+| `src/orbis_clock.cpp` | 234 | 2 / 2 (`clock_gettime`) | correction |
+| `src/orbis_thread.cpp` | 485 | 7 / 1 (`pthread_create`) | correction, with a named surface beside it |
+| `src/orbis_mem.cpp` | 463 | 5 / 10 (`operator new` and friends) | correction, with log-only reporting beside it |
+| `src/orbis_paths.cpp` | 259 | 4 / 6 (`open`, `open64`, `remove`, `rename`, `unlink`) | correction — relative `open` is EINVAL and `getcwd` is ENOSYS, so rewriting a path is a correction of kernel behaviour reached through libc |
+| `src/orbis_log.c` | 62 | 7 / 0 | **substrate** — both roofs call it |
+| `src/orbis_env.cpp` | 185 | 1 / 0 | **substrate** — both roofs read knobs through it |
+| `src/orbis_report.h` | 31 | — (header) | substrate, private: the one channel a dying process still has |
+| `src/orbis_timer.cpp` | 196 | 1 / 0 | ⚠ contested, see below |
+| `src/orbis_sysconf.cpp` | 27 | 1 / 0 | ⚠ contested, see below |
+| `src/orbis_jit.c` + `include/orbis_jit.h` | 778 + 143 | 7 / 0 | **runtime library** — `orbis_jit_alloc`, `_alloc_at`, `_free`, `_protect`, `_state`, `_reachable`, `_release_all`; nothing reaches it through `mmap` |
+| `src/orbis_boot.cpp` + `include/orbis_boot.h` | 552 + 32 | 2 / 1, and the 1 is `DW.ref.__gxx_personality_v0`, which the compiler emits and nobody calls | **runtime library** |
+| `include/bits/alltypes.h`, `errno.h`, `execinfo.h`, `machine/cpu.h`, `pthread_np.h`, `signal.h`, `stdlib.h`, `unistd.h`, `sys/{cpuset,dirent,endian,ioccom,ioctl,param,sysctl,umtx}.h` | 1288 | reached by `#include`, never by name | correction |
+| `include/orbis_prefix.h` | 39 | `-include`d on every command line | correction (and the place a feature macro would go) |
+| `include/orbis_{clock,env,log,mem,mmap,paths,stat,thread,timer}.h` | 834 | the declarations of the files above | follows its `.c`: correction where that is, substrate for log and env |
+| `include/orbis_netlog.h` + `optional/orbis_netlog.cpp` | 57 + 85 | not in the archive | **runtime library** — the dev-host link; libnx puts the same thing in `runtime/nxlink.h`. ⚠ its default `NETLOG_TAG` is `"tempest"`, a product name in a shared file |
+| `include/ps4_app.h` + `optional/ps4_app.cpp` | 108 + 294 | not in the archive | **two things**: the log tee is runtime library; the termination ladder and the `/app0/ps4-run.cfg` reader are **policy**, and `ps4_app.h:3` already says "THIS IS POLICY" |
+| `optional/orbis_bigheap.c` | 38 | not in the archive, not a target | **policy** — the SDK's own idiom is that the application defines `sceLibcHeapSize`; it is an example a program copies |
+| `optional/CMakeLists.txt` | 90 | — | tooling |
+| `crt/orbis_crt1.c`, `orbis_crti.S`, `orbis_crtlib.c`, `orbis_crtn.S`, `orbis_sce_params.h` | 662 | the entry path | correction — a toolchain's CRT, checked against the SDK's interface by `build.sh` |
+| `build.sh`, `test/`, `scripts/release/sdk-licenses.sh`, `licenses/`, `LICENSING.md`, `NOTICE.md` | — | — | tooling that builds and documents **this** repository |
+
+⚠ **Two files are contested and this table does not settle them.** `orbis_timer.cpp` and
+`orbis_sysconf.cpp` each define exactly one `orbis_*` name and no foreign name, which by the linker
+test above makes them a library; but each exists because a libc facility behaves differently here, and
+each is described in §2 as a correction. The boundary analysis
+(`ps4-mesa-docs/docs/PLAN-kit-boundary-20260919.md`) lists both ways in two different sections — §0
+counts them among the members that "define only `orbis_*` names — a runtime library under a roof named
+compat", and §1 lists them among the `src/` interposers whose verdict is "correction". Nothing turns on
+it today, and inventing an answer here would hide the one useful fact: a one-function wrapper is where
+the two roofs actually touch.
+
+⚠ **So "this repository may shrink one day", at the top of this file, is true of the correction roof
+and of nothing else.** `orbis_jit`, `orbis_boot`, `orbis_netlog` and the `ps4_app` log tee are named
+API; no SDK fix can delete a name a program calls. That is not an argument for moving them today - they
+are members of `liborbis-compat.a`, which every consumer force-loads, and a move means this repository
+starts producing something else. It is an argument for not writing "may shrink" as though it covered
+everything under this roof.
 
 ## 2. What it corrects
 
