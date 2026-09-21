@@ -1,5 +1,11 @@
 # orbis-compat
 
+> **Archived.** This repository is superseded by [orbsdk](https://github.com/orbis-ports/orbsdk), the
+> PlayStation 4 SDK that replaces orbis-compat, orbis-porting-kit and the OpenOrbis toolchain
+> arrangement with one owned sysroot. Nothing here is maintained. The ps4-support branches of the orbis-ports forks
+> still build against this repository as it stands; their orbsdk branches do not use it.
+
+
 What the PlayStation 4 toolchain gets wrong, corrected once instead of four times.
 
 **Status, 2026-08-19.** Wired into all four builds of this port and verified on hardware: the title
